@@ -1,4 +1,4 @@
-**Sobre mi:**
+**👨‍💼 Sobre mi:**
 ---
 - 👋 ¡Hola! Soy Alan, estudiante de Contador Público con una mezcla interesante de experiencias: una década trabajando como auditor externo y mucha curiosidad por el mundo de la ciencia de datos.
       Mi experiencia se extiende a diversas industrias, incluyendo medios, tecnología, consumo masivo y automotriz, donde desarrollo mis habilidades analíticas y de resolución de problemas.
@@ -14,7 +14,7 @@
       Explora mi repositorio para descubrir proyectos que fusionan mi experiencia en auditoría con las herramientas y técnicas de Data Analytics y Data Science.
 
 ---
-**About me:**
+**👨‍💼 About me:**
 ---
 - 👋 Hi! I'm Alan, a CPA student with an interesting mix of experiences: a decade working as an external auditor and a lot of curiosity for the world of data science.
       My experience spans diverse industries, including media, technology, FMCG and automotive, where I develop my analytical and problem-solving skills.
@@ -30,9 +30,10 @@
 - 🚀 Projects on GitHub:
 Check out my collection of undertakings that integrate my auditing knowledge with innovations in Data Science and Analytics for a thrilling discoveries.
 
-
-**Tech Stack:**
 ---
+**💻 Tech Stack:**
+---
+
 
 
 <!---
