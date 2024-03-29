@@ -1,6 +1,6 @@
 **👨‍💼 Sobre mi:**
 ---
-👋 ¡Hola! Soy Alan, estudiante de Contador Público con una mezcla interesante de experiencias: una década trabajando como auditor externo y mucha curiosidad por el mundo de la ciencia de datos.
+👋 ¡Hola! Soy Alan, estudiante de Contador Público con una mezcla interesante de experiencias: una década trabajando como auditor externo y mucha curiosidad por el mundo de los datos.
     Mi experiencia se extiende a diversas industrias, incluyendo medios, tecnología, consumo masivo y automotriz, donde desarrollo mis habilidades analíticas y de resolución de problemas.
 
 🌱 Actualmente me encuentro realizando un curso de Data Science, tras haber completado el programa en Data Analytics. Estas capacitaciones me permiten reforzar mi capacidad de analizar e interpretar los datos para tomar decisiones informadas.
