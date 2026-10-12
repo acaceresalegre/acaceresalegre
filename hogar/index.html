@@ -1,0 +1,231 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#2f6f5e">
+  <title>Hogar</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <h1>🏠 Hogar</h1>
+    <span id="today-label" class="muted"></span>
+  </header>
+
+  <nav class="tabs" role="tablist">
+    <button data-view="inicio" class="active">🏠<span>Inicio</span></button>
+    <button data-view="finanzas">💰<span>Finanzas</span></button>
+    <button data-view="tareas">✅<span>Tareas</span></button>
+    <button data-view="calendario">📅<span>Calendario</span></button>
+    <button data-view="ajustes">⚙️<span>Ajustes</span></button>
+  </nav>
+
+  <main>
+    <!-- INICIO -->
+    <section id="view-inicio" class="view active">
+      <div class="cards">
+        <div class="card stat"><span class="muted">Ingresos del mes</span><strong id="home-income" class="pos"></strong></div>
+        <div class="card stat"><span class="muted">Gastos del mes</span><strong id="home-expense" class="neg"></strong></div>
+        <div class="card stat"><span class="muted">Balance</span><strong id="home-balance"></strong></div>
+      </div>
+      <div class="grid2">
+        <div class="card">
+          <h2>Tareas para hoy y atrasadas</h2>
+          <ul id="home-tasks" class="list"></ul>
+        </div>
+        <div class="card">
+          <h2>Próximos 7 días</h2>
+          <ul id="home-agenda" class="list"></ul>
+        </div>
+      </div>
+      <div class="card">
+        <h2>Presupuestos del mes</h2>
+        <div id="home-budgets"></div>
+      </div>
+    </section>
+
+    <!-- FINANZAS -->
+    <section id="view-finanzas" class="view">
+      <div class="month-nav">
+        <button class="ghost" data-fin-month="-1" aria-label="Mes anterior">‹</button>
+        <h2 id="fin-month-label"></h2>
+        <button class="ghost" data-fin-month="1" aria-label="Mes siguiente">›</button>
+      </div>
+      <div class="cards">
+        <div class="card stat"><span class="muted">Ingresos</span><strong id="fin-income" class="pos"></strong></div>
+        <div class="card stat"><span class="muted">Gastos</span><strong id="fin-expense" class="neg"></strong></div>
+        <div class="card stat"><span class="muted">Balance</span><strong id="fin-balance"></strong></div>
+      </div>
+
+      <div class="grid2">
+        <form id="tx-form" class="card form">
+          <h2>Nuevo movimiento</h2>
+          <div class="seg">
+            <label><input type="radio" name="type" value="expense" checked> Gasto</label>
+            <label><input type="radio" name="type" value="income"> Ingreso</label>
+          </div>
+          <label>Monto<input name="amount" type="number" step="0.01" min="0.01" required inputmode="decimal"></label>
+          <label>Categoría<select name="category" required></select></label>
+          <label>Descripción<input name="description" maxlength="80" placeholder="Ej: compra semanal"></label>
+          <div class="row">
+            <label>Fecha<input name="date" type="date" required></label>
+            <label>Quién<select name="member"></select></label>
+          </div>
+          <button type="submit">Agregar</button>
+        </form>
+
+        <div class="card">
+          <h2>Gastos por categoría</h2>
+          <div id="fin-categories"></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <h2>Movimientos</h2>
+          <select id="fin-filter">
+            <option value="all">Todos</option>
+            <option value="expense">Gastos</option>
+            <option value="income">Ingresos</option>
+          </select>
+        </div>
+        <table class="table">
+          <thead><tr><th>Fecha</th><th>Detalle</th><th>Quién</th><th class="num">Monto</th><th></th></tr></thead>
+          <tbody id="fin-table"></tbody>
+        </table>
+        <p id="fin-empty" class="muted empty">No hay movimientos este mes.</p>
+      </div>
+    </section>
+
+    <!-- TAREAS -->
+    <section id="view-tareas" class="view">
+      <div class="grid2">
+        <form id="task-form" class="card form">
+          <h2>Nueva tarea</h2>
+          <label>Tarea<input name="title" required maxlength="100" placeholder="Ej: sacar la basura"></label>
+          <div class="row">
+            <label>Responsable<select name="assignee"></select></label>
+            <label>Vence<input name="due" type="date"></label>
+          </div>
+          <div class="row">
+            <label>Prioridad
+              <select name="priority">
+                <option value="low">Baja</option>
+                <option value="medium" selected>Media</option>
+                <option value="high">Alta</option>
+              </select>
+            </label>
+            <label>Repetir
+              <select name="repeat">
+                <option value="none">No</option>
+                <option value="daily">Cada día</option>
+                <option value="weekly">Cada semana</option>
+                <option value="monthly">Cada mes</option>
+              </select>
+            </label>
+          </div>
+          <button type="submit">Agregar</button>
+        </form>
+
+        <div class="card">
+          <div class="card-head">
+            <h2>Lista</h2>
+            <div class="filters">
+              <select id="task-filter-status">
+                <option value="pending">Pendientes</option>
+                <option value="done">Completadas</option>
+                <option value="all">Todas</option>
+              </select>
+              <select id="task-filter-member"></select>
+            </div>
+          </div>
+          <ul id="task-list" class="list tasks"></ul>
+          <p id="task-empty" class="muted empty">No hay tareas para mostrar.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- CALENDARIO -->
+    <section id="view-calendario" class="view">
+      <div class="month-nav">
+        <button class="ghost" data-cal-month="-1" aria-label="Mes anterior">‹</button>
+        <h2 id="cal-month-label"></h2>
+        <button class="ghost" data-cal-month="1" aria-label="Mes siguiente">›</button>
+        <button class="ghost small" id="cal-today">Hoy</button>
+      </div>
+      <div class="calendar card">
+        <div class="cal-head"><span>Lun</span><span>Mar</span><span>Mié</span><span>Jue</span><span>Vie</span><span>Sáb</span><span>Dom</span></div>
+        <div id="cal-grid" class="cal-grid"></div>
+      </div>
+      <div class="grid2">
+        <div class="card">
+          <h2 id="day-label"></h2>
+          <ul id="day-list" class="list"></ul>
+          <p id="day-empty" class="muted empty">Nada agendado este día.</p>
+        </div>
+        <form id="event-form" class="card form">
+          <h2>Nuevo evento</h2>
+          <label>Evento<input name="title" required maxlength="100" placeholder="Ej: turno médico"></label>
+          <div class="row">
+            <label>Fecha<input name="date" type="date" required></label>
+            <label>Hora<input name="time" type="time"></label>
+          </div>
+          <label>Notas<input name="notes" maxlength="200"></label>
+          <button type="submit">Agregar</button>
+        </form>
+      </div>
+    </section>
+
+    <!-- AJUSTES -->
+    <section id="view-ajustes" class="view">
+      <div class="grid2">
+        <div class="card">
+          <h2>Miembros del hogar</h2>
+          <ul id="members-list" class="list chips"></ul>
+          <form id="member-form" class="inline">
+            <input name="name" required maxlength="30" placeholder="Nombre">
+            <button type="submit">Agregar</button>
+          </form>
+        </div>
+        <div class="card">
+          <h2>Presupuesto mensual por categoría</h2>
+          <form id="budget-form" class="form">
+            <div id="budget-fields"></div>
+            <button type="submit">Guardar presupuestos</button>
+          </form>
+        </div>
+        <div class="card">
+          <h2>Categorías</h2>
+          <form id="category-form" class="inline">
+            <select name="type">
+              <option value="expense">Gasto</option>
+              <option value="income">Ingreso</option>
+            </select>
+            <input name="name" required maxlength="30" placeholder="Nueva categoría">
+            <button type="submit">Agregar</button>
+          </form>
+          <p class="muted">Gastos:</p>
+          <ul id="cat-expense" class="list chips"></ul>
+          <p class="muted">Ingresos:</p>
+          <ul id="cat-income" class="list chips"></ul>
+        </div>
+        <div class="card">
+          <h2>Copia de seguridad</h2>
+          <p class="muted">Los datos se guardan en este navegador. Exportá un archivo para respaldarlos o pasarlos a otro dispositivo.</p>
+          <div class="row-buttons">
+            <button id="export-btn" type="button">Exportar datos</button>
+            <label class="button secondary">Importar datos<input id="import-input" type="file" accept="application/json" hidden></label>
+            <button id="reset-btn" type="button" class="danger">Borrar todo</button>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <div id="toast" class="toast" role="status"></div>
+
+  <script src="lib.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
