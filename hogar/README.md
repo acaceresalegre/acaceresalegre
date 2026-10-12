@@ -18,8 +18,11 @@ Moneda base COP, con ARS y USD para cargar y visualizar.
 
 ## Cómo usarla
 
-No necesita instalación ni servidor: se abre `index.html`. Para usarla en el celular conviene publicarla
-(por ejemplo con GitHub Pages) y elegir «Agregar a pantalla de inicio».
+Está publicada con GitHub Pages en **https://acaceresalegre.github.io/acaceresalegre/**
+(el workflow `.github/workflows/pages.yml` corre los tests y la publica cada vez que cambia `hogar/` en `main`).
+
+En el celular: abrir esa dirección y elegir «Agregar a pantalla de inicio» (Safari: botón Compartir; Chrome: menú ⋮).
+También funciona abriendo `index.html` directamente, sin servidor.
 
 Los datos se guardan en el dispositivo (`localStorage`). Para pasarlos a otro equipo: **Ajustes → Copia de seguridad / Restaurar copia**.
 
