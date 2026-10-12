@@ -488,7 +488,181 @@
     return state;
   }
 
+  // ---------- Sincronización con la planilla de Google ----------
+  // La planilla usa los nombres del Excel (Gastos_Fijos); la app los muestra legibles (Gastos fijos).
+  const catLabel = (code) => String(code).replace(/_(.)/g, (m, c) => ' ' + c.toLowerCase());
+
+  const INCOME_GROUP = 'Ingresos';
+  const SETTING_KEYS = { USD: 'Tasa USD (COP por 1 USD)', ARS: 'Tasa ARS (COP por 1 ARS)', threshold: 'Umbral de aviso de presupuesto' };
+
+  function parseAlerts(v) {
+    if (typeof v === 'number') return [v];
+    const list = String(v ?? '').split(/[,;\s]+/).filter((x) => x !== '').map(Number).filter((n) => !isNaN(n) && n >= 0);
+    return list.length ? list : [3, 0];
+  }
+
+  const str = (v) => (v === undefined || v === null ? '' : String(v).trim());
+  const num = (v) => (typeof v === 'number' ? v : parseNumber(v) || 0);
+
+  // Límite de cada categoría para el mes: suma del presupuesto del mes, o del mismo mes del año anterior.
+  function budgetLimits(rows, key, rates) {
+    const pick = (k) => rows.filter((r) => str(r['Mes']).slice(0, 7) === k);
+    let month = pick(key);
+    if (!month.length) month = pick(addMonths(key, -12));
+    const out = {};
+    for (const r of month) {
+      out[r['Categoría']] = (out[r['Categoría']] || 0) + convert(num(r['Importe']), str(r['Moneda']) || 'COP', 'COP', rates);
+    }
+    return out;
+  }
+
+  // Convierte las pestañas de la planilla al estado de la app. Conserva preferencias locales de prev.
+  function sheetToState(tables, prev, today) {
+    const s = baseState(today);
+    s.loans = [];
+    s.recurring = [];
+    if (prev && prev.settings) s.settings.displayCur = prev.settings.displayCur;
+    const t = (name) => tables[name] || [];
+
+    for (const r of t('Ajustes')) {
+      const v = num(r['Valor']);
+      if (r['Ajuste'] === SETTING_KEYS.USD && v > 0) s.settings.rates.USD = v;
+      if (r['Ajuste'] === SETTING_KEYS.ARS && v > 0) s.settings.rates.ARS = v;
+      if (r['Ajuste'] === SETTING_KEYS.threshold && v > 0) s.settings.threshold = Math.round(v <= 1 ? v * 100 : v);
+    }
+    s.settings.ratesSource = 'planilla';
+
+    const codes = {};
+    const label = (code) => {
+      const c = str(code);
+      if (!c) return c;
+      const l = catLabel(c);
+      codes[l] = c;
+      return l;
+    };
+    const groups = new Map();
+    const incomes = [];
+    for (const r of t('Categorías')) {
+      const cat = str(r['Categoría']);
+      const sub = str(r['Subcategoría']);
+      if (!cat) continue;
+      if (cat === INCOME_GROUP || str(r['Tipo']) === 'Ingreso') {
+        if (sub && !incomes.includes(sub)) incomes.push(sub);
+        continue;
+      }
+      if (!groups.has(cat)) groups.set(cat, []);
+      if (sub && !groups.get(cat).includes(sub)) groups.get(cat).push(sub);
+    }
+    const limits = budgetLimits(t('Presupuesto'), monthKey(today), s.settings.rates);
+    s.categories = [...groups].map(([code, subs]) => ({ name: label(code), group: code, limit: Math.round(limits[code] || 0), subs }));
+    if (incomes.length) s.incomeCats = incomes;
+    const methods = t('Listas').map((r) => str(r['Medio de pago'])).filter(Boolean);
+    if (methods.length) s.methods = methods;
+
+    s.movements = t('Movimientos').filter((r) => r['ID'] && r['Fecha']).map((r) => {
+      const inc = str(r['Tipo']) === 'Ingreso' || str(r['Categoría']) === INCOME_GROUP;
+      return {
+        id: str(r['ID']), date: str(r['Fecha']), type: inc ? 'inc' : 'exp',
+        cat: inc ? str(r['Subcategoría']) : label(r['Categoría']), sub: inc ? '' : str(r['Subcategoría']),
+        note: str(r['Comentarios']), amount: num(r['Importe']), cur: str(r['Moneda']) || 'COP', method: str(r['Medio de pago']),
+      };
+    });
+    s.bills = t('Facturas').filter((r) => r['ID'] && r['Vence']).map((r) => ({
+      id: str(r['ID']), templateId: str(r['Recurrente ID']) || null, name: str(r['Nombre']), cat: label(r['Categoría']),
+      sub: str(r['Subcategoría']), amount: num(r['Importe']), cur: str(r['Moneda']) || 'COP', due: str(r['Vence']),
+      paid: str(r['Pagada']) === 'Sí', paidAt: str(r['Fecha de pago']) || null, method: str(r['Medio de pago']),
+      loanId: str(r['Préstamo ID']) || null, alerts: parseAlerts(r['Avisos (días antes)']),
+    }));
+    s.recurring = t('Recurrentes').filter((r) => r['ID'] && str(r['Activa']) !== 'No').map((r) => ({
+      id: str(r['ID']), name: str(r['Nombre']), cat: label(r['Categoría']), sub: str(r['Subcategoría']),
+      amount: num(r['Importe']), cur: str(r['Moneda']) || 'COP', day: num(r['Día']) || 1, alerts: parseAlerts(r['Avisos (días antes)']),
+    }));
+    s.receivables = t('Por cobrar').filter((r) => r['ID']).map((r) => ({
+      id: str(r['ID']), client: str(r['Cliente']), issued: str(r['Fecha de emisión']) || null, due: str(r['Vence']),
+      amount: num(r['Valor']), cur: str(r['Moneda']) || 'COP', collected: str(r['Estado']) === 'Cobrada',
+      incomeId: str(r['Movimiento ID']) || null, collectedAt: str(r['Fecha de cobro']) || null,
+    }));
+    s.loans = t('Deudas').filter((r) => r['ID']).map((r) => ({
+      id: str(r['ID']), name: str(r['Préstamo']), cur: str(r['Moneda']) || 'COP', installment: num(r['Próxima cuota']),
+      day: num(r['Día de vencimiento']) || null, balance: r['Saldo actual'] === undefined ? null : num(r['Saldo actual']),
+      capital: num(r['Capital']) || null, paidCount: r['Cuotas vencidas'] === undefined ? null : num(r['Cuotas vencidas']),
+      totalCount: num(r['Plazo (cuotas)']) || null,
+    }));
+    s.catCodes = codes;
+    s.synced = true;
+    return s;
+  }
+
+  // Filas que la app puede escribir, por pestaña (solo las columnas que la app conoce).
+  function stateToRows(s) {
+    const code = (labelName) => (s.catCodes && s.catCodes[labelName]) || labelName;
+    const alerts = (a) => (a && a.length ? a : [3, 0]).join(',');
+    return {
+      'Movimientos': s.movements.map((m) => ({
+        'ID': m.id, 'Fecha': m.date, 'Tipo': m.type === 'inc' ? 'Ingreso' : 'Gasto',
+        'Categoría': m.type === 'inc' ? INCOME_GROUP : code(m.cat), 'Subcategoría': m.type === 'inc' ? m.cat : (m.sub || ''),
+        'Moneda': m.cur, 'Importe': m.amount, 'Medio de pago': m.method || '', 'Comentarios': m.note || '',
+      })),
+      'Facturas': s.bills.map((b) => ({
+        'ID': b.id, 'Nombre': b.name, 'Categoría': code(b.cat), 'Subcategoría': b.sub || '', 'Moneda': b.cur, 'Importe': b.amount,
+        'Vence': b.due, 'Pagada': b.paid ? 'Sí' : 'No', 'Fecha de pago': b.paid ? (b.paidAt || '') : '',
+        'Medio de pago': b.method || '', 'Recurrente ID': b.templateId || '', 'Préstamo ID': b.loanId || '',
+        'Avisos (días antes)': alerts(b.alerts),
+      })),
+      'Recurrentes': s.recurring.filter((r) => !r.loanId).map((r) => ({
+        'ID': r.id, 'Nombre': r.name, 'Categoría': code(r.cat), 'Subcategoría': r.sub || '', 'Moneda': r.cur,
+        'Importe': r.amount, 'Día': r.day, 'Avisos (días antes)': alerts(r.alerts), 'Activa': 'Sí',
+      })),
+      'Por cobrar': s.receivables.map((r) => ({
+        'ID': r.id, 'Fecha de emisión': r.issued || '', 'Cliente': r.client, 'Moneda': r.cur, 'Valor': r.amount, 'Vence': r.due,
+        'Estado': r.collected ? 'Cobrada' : 'Pendiente', 'Fecha de cobro': r.collected ? (r.collectedAt || '') : '',
+        'Movimiento ID': r.incomeId || '',
+      })),
+      'Categorías': [
+        ...s.categories.flatMap((c) => (c.subs.length ? c.subs : ['']).map((sub) => ({
+          'Categoría': c.group || code(c.name), 'Subcategoría': sub, 'Tipo': 'Gasto' }))),
+        ...s.incomeCats.map((sub) => ({ 'Categoría': INCOME_GROUP, 'Subcategoría': sub, 'Tipo': 'Ingreso' })),
+      ],
+      'Ajustes': [
+        { 'Ajuste': SETTING_KEYS.USD, 'Valor': s.settings.rates.USD },
+        { 'Ajuste': SETTING_KEYS.ARS, 'Valor': s.settings.rates.ARS },
+        { 'Ajuste': SETTING_KEYS.threshold, 'Valor': s.settings.threshold / 100 },
+      ],
+    };
+  }
+
+  const ROW_KEYS = { 'Categorías': ['Categoría', 'Subcategoría'], 'Ajustes': ['Ajuste'] };
+  const rowKey = (table, row) => (ROW_KEYS[table] || ['ID']).map((k) => str(row[k])).join('|');
+
+  // Cambios entre dos versiones de las filas: upsert de lo nuevo o modificado, delete de lo que ya no está.
+  function diffRows(prev, next) {
+    const ops = [];
+    for (const table of Object.keys(next)) {
+      const before = new Map((prev && prev[table] || []).map((r) => [rowKey(table, r), JSON.stringify(r)]));
+      const seen = new Set();
+      for (const row of next[table]) {
+        const k = rowKey(table, row);
+        seen.add(k);
+        if (before.get(k) !== JSON.stringify(row)) ops.push({ table, op: 'upsert', row });
+      }
+      for (const r of (prev && prev[table]) || []) {
+        if (!seen.has(rowKey(table, r))) ops.push({ table, op: 'delete', row: r });
+      }
+    }
+    return ops;
+  }
+
+  // Lee el enlace de conexión que arma la planilla: #conectar=URL&token=...&quien=Alan
+  function parseConnectHash(hash) {
+    const p = new URLSearchParams(String(hash || '').replace(/^#/, ''));
+    const url = p.get('conectar');
+    const token = p.get('token');
+    if (!url || !token || !/^https:\/\/script\.google(usercontent)?\.com\//.test(url)) return null;
+    return { url, token, user: p.get('quien') || '' };
+  }
+
   const api = {
+    catLabel, parseAlerts, budgetLimits, sheetToState, stateToRows, diffRows, parseConnectHash,
     toISO, parseISO, todayISO, monthKey, dayOf, addMonths, daysInMonth, dateInMonth, daysBetween,
     monthName, monthLabel, shortDate, longDate, uid, MONTHS, MON,
     CURRENCIES, convert, formatMoney, formatShort, cleanDigits, groupDigits, toCOP,

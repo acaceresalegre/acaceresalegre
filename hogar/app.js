@@ -3,6 +3,8 @@
 
   const L = window.CasaLib;
   const STORAGE_KEY = 'cuentas-casa-v1';
+  const SYNC_KEY = 'cuentas-casa-sync';
+  const POLL_MS = 20000;
   const XLSX_SRC = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
   const TESSERACT_SRC = 'https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js';
 
@@ -19,8 +21,10 @@
     let s = null;
     try { s = L.normalizeState(JSON.parse(localStorage.getItem(STORAGE_KEY)), today); } catch (e) { /* datos dañados */ }
     s = s || L.sampleState(today);
-    L.ensureRecurring(s, curMonth);
-    L.ensureRecurring(s, L.addMonths(curMonth, 1));
+    if (!s.synced) {
+      L.ensureRecurring(s, curMonth);
+      L.ensureRecurring(s, L.addMonths(curMonth, 1));
+    }
     return s;
   }
 
@@ -43,6 +47,115 @@
 
   function save() {
     persist();
+    queueChanges();
+    refresh();
+  }
+
+  // ---------- Sincronización con Google Sheets ----------
+  // La planilla es la fuente de verdad. Cada cambio local se compara contra la última versión
+  // recibida y se envía como upsert/delete; si no hay conexión queda pendiente y se reintenta.
+  const sync = loadSync();
+  const isSynced = () => Boolean(sync.url && state.synced);
+
+  function loadSync() {
+    try { return { pending: [], ...JSON.parse(localStorage.getItem(SYNC_KEY)) }; } catch (e) { return { pending: [] }; }
+  }
+
+  function saveSync() {
+    try { localStorage.setItem(SYNC_KEY, JSON.stringify(sync)); } catch (e) { /* sin almacenamiento */ }
+  }
+
+  function queueChanges() {
+    if (!isSynced()) return;
+    const rows = L.stateToRows(state);
+    const ops = L.diffRows(sync.snapshot, rows);
+    sync.snapshot = rows;
+    if (!ops.length) return;
+    sync.pending.push(...ops);
+    saveSync();
+    push();
+  }
+
+  async function call(method, params, body) {
+    const url = sync.url + (method === 'GET' ? '?' + new URLSearchParams({ ...params, token: sync.token }) : '');
+    const res = await fetch(url, method === 'GET' ? {} : { method: 'POST', body: JSON.stringify({ ...body, token: sync.token }) });
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.error || 'Error de la planilla');
+    return data;
+  }
+
+  function applyPull(data) {
+    state = L.sheetToState(data.tables, state, today);
+    sync.version = data.version;
+    sync.snapshot = L.stateToRows(state);
+    sync.lastSync = new Date().toISOString();
+    sync.error = null;
+    saveSync();
+    persist();
+    refresh();
+  }
+
+  let pushing = null;
+  function push() {
+    if (pushing || !sync.pending.length || !sync.url) return pushing;
+    const ops = sync.pending.slice();
+    pushing = call('POST', null, { user: sync.user, ops })
+      .then((data) => {
+        sync.pending.splice(0, ops.length);
+        if (!sync.pending.length) applyPull(data);
+        else saveSync();
+      })
+      .catch((err) => { sync.error = err.message; saveSync(); })
+      .finally(() => {
+        pushing = null;
+        if (sync.pending.length && !sync.error) push();
+        if (ui.sheet && ui.sheet.isSettings) renderSheet();
+      });
+    return pushing;
+  }
+
+  async function pull() {
+    applyPull(await call('GET', { action: 'pull' }));
+  }
+
+  async function poll() {
+    if (!isSynced() || document.visibilityState !== 'visible' || (ui.sheet && !ui.sheet.isSettings)) return;
+    try {
+      if (sync.pending.length) { sync.error = null; await push(); return; }
+      const { version } = await call('GET', { action: 'version' });
+      if (version !== sync.version) await pull();
+    } catch (e) {
+      sync.error = e.message;
+      saveSync();
+    }
+  }
+
+  async function connect(url, token, user) {
+    const prev = { ...sync };
+    Object.assign(sync, { url, token, user, pending: [], snapshot: null, version: null });
+    try {
+      const data = await call('GET', { action: 'pull' });
+      if (!confirm(`Conectado a la planilla. Los datos de este dispositivo se reemplazan por los de la planilla (${data.tables['Movimientos'].length} movimientos). ¿Continuar?`)) {
+        Object.assign(sync, prev);
+        return;
+      }
+      applyPull(data);
+      toast(`Sincronizado con la planilla${user ? ' como ' + user : ''}`, 'green');
+    } catch (e) {
+      Object.assign(sync, prev);
+      saveSync();
+      toast(`No se pudo conectar: ${e.message}`, 'red');
+    }
+  }
+
+  function disconnect() {
+    if (sync.pending.length && !confirm(`Hay ${sync.pending.length} cambios sin enviar a la planilla que se perderán. ¿Desconectar igual?`)) return;
+    Object.keys(sync).forEach((k) => delete sync[k]);
+    sync.pending = [];
+    saveSync();
+    state.synced = false;
+    persist();
+    toast('Desconectado de la planilla. Los datos quedan en este dispositivo.');
     refresh();
   }
 
@@ -415,7 +528,7 @@
         <div class="line"><span>Pagadas</span><b>${paid} de ${loans.length}</b></div>
       </section>
       <div class="stack" style="margin-top:12px">${cards || '<div class="card empty">No hay préstamos cargados</div>'}</div>
-      <button class="dashed" data-act="loan-new">+ Nuevo préstamo</button>`;
+      ${state.synced ? '' : '<button class="dashed" data-act="loan-new">+ Nuevo préstamo</button>'}`;
   }
 
   // ---------- Render ----------
@@ -502,8 +615,8 @@
     if (!b) return;
     const before = L.categoryStats(state, L.monthKey(b.due), today).find((s) => s.name === b.cat);
     b.paid = !b.paid;
-    if (b.paid) b.method = b.method || 'Transferencia';
-    const loan = b.loanId && state.loans.find((l) => l.id === b.loanId);
+    if (b.paid) { b.method = b.method || 'Transferencia'; b.paidAt = today; }
+    const loan = b.loanId && !state.synced && state.loans.find((l) => l.id === b.loanId);
     if (loan && loan.paidCount != null) loan.paidCount = Math.max(0, loan.paidCount + (b.paid ? 1 : -1));
     if (b.paid) {
       const after = L.categoryStats(state, L.monthKey(b.due), today).find((s) => s.name === b.cat);
@@ -531,18 +644,20 @@
           <div class="kv"><span>Del límite</span><b>${s.limit ? pctTxt(s.pct) : '—'}</b></div>
           <div class="kv"><span>Proyección de cierre</span><b class="num">${esc(money(s.projection))}${s.limit ? ` · ${pctTxt(s.projPct)}` : ''}</b></div>
         </div>
+        ${state.synced ? `<div class="notice">Límite del mes: ${esc(money(c.limit))}. Se edita en la pestaña Presupuesto de la planilla.</div>` : `
         <span class="field-label">Límite mensual (COP)</span>
         <div class="stepper">
           <button data-act="limit-step" data-v="-50000" aria-label="Restar 50.000">−</button>
           <input class="input num" id="limit" inputmode="numeric" value="${L.groupDigits(digits)}" aria-label="Límite mensual">
           <button data-act="limit-step" data-v="50000" aria-label="Sumar 50.000">+</button>
         </div>
-        <button class="primary" data-act="limit-save" data-id="${esc(name)}">Guardar límite</button>
+        <button class="primary" data-act="limit-save" data-id="${esc(name)}">Guardar límite</button>`}
         <span class="field-label">Movimientos y facturas del mes</span>
         <div class="list-card">${items.length ? items.map((it) => (it.kind === 'mov' ? movRow(it) : `
           <button class="mov" data-act="bill" data-id="${it.id}"><span class="grow"><b>${esc(it.name)}</b><small>Factura · ${esc(L.dueInfo(it, today).label)}</small></span><span class="amt">${esc(shown(it))}</span></button>`)).join('') : '<div class="empty">Sin movimientos este mes</div>'}</div>`;
     }, (sheet) => {
       const input = sheet.querySelector('#limit');
+      if (!input) return;
       input.oninput = () => { digits = L.cleanDigits(input.value); input.value = L.groupDigits(digits); };
       sheet.querySelectorAll('[data-act="limit-step"]').forEach((btn) => {
         btn.onclick = (e) => {
@@ -667,7 +782,10 @@
         const r = { id: L.uid(), name, cat: f.cat, sub: f.sub, amount, cur: f.cur, day: L.dayOf(f.due), alerts: [...f.alerts], startMonth: L.monthKey(f.due) };
         state.recurring.push(r);
         state.bills.push({ id: L.uid(), templateId: r.id, name, cat: f.cat, sub: f.sub, amount, cur: f.cur, due: f.due, paid: false, method: '', loanId: null, alerts: [...f.alerts] });
-        for (let k = L.addMonths(L.monthKey(f.due), 1); k <= L.addMonths(curMonth, 1); k = L.addMonths(k, 1)) L.ensureRecurring(state, k);
+        // Con la planilla conectada, las facturas de los meses siguientes las crea el servidor.
+        if (!state.synced) {
+          for (let k = L.addMonths(L.monthKey(f.due), 1); k <= L.addMonths(curMonth, 1); k = L.addMonths(k, 1)) L.ensureRecurring(state, k);
+        }
       } else {
         state.bills.push({ id: L.uid(), templateId: null, name, cat: f.cat, sub: f.sub, amount, cur: f.cur, due: f.due, paid: false, method: '', loanId: null, alerts: [...f.alerts] });
       }
@@ -769,6 +887,7 @@
       const mov = { id: L.uid(), date: today, type: 'inc', cat: 'Sueldo Karo', sub: '', note: `Cobro ${r.client}`, amount: r.amount, cur: r.cur, method: 'Transferencia' };
       state.movements.push(mov);
       r.collected = true;
+      r.collectedAt = today;
       r.incomeId = mov.id;
       toast(`Cobrada: ${r.client} · ${shown(r)}`, 'green');
     } else {
@@ -781,7 +900,26 @@
   }
 
   // --- Préstamo ---
+  // Con la planilla conectada, los préstamos se leen de las pestañas Deudas y Cuotas.
+  function openLoanSynced(loan) {
+    openSheet(() => {
+      const b = loanBill(loan);
+      const fmt = (v) => (v == null ? '—' : esc(orig({ amount: v, cur: loan.cur })));
+      return `<h3>${esc(loan.name)}</h3>
+        <p class="lead">Datos de la tabla de amortización de la planilla</p>
+        <div class="card">
+          <div class="kv"><span>Capital</span><b class="num">${fmt(loan.capital)}</b></div>
+          <div class="kv"><span>Saldo actual</span><b class="num">${fmt(loan.balance)}</b></div>
+          <div class="kv"><span>Próxima cuota</span><b class="num">${fmt(loan.installment)}${loan.day ? ' · día ' + loan.day : ''}</b></div>
+          <div class="kv"><span>Cuotas vencidas</span><b>${loan.paidCount ?? '—'} de ${loan.totalCount ?? '—'}</b></div>
+        </div>
+        <div class="notice">Para cambiar estos datos, editá las pestañas Deudas y Cuotas de la planilla.</div>
+        ${b ? `<button class="secondary" data-act="bill" data-id="${b.id}">Ver cuota de ${esc(L.monthName(curMonth))}</button>` : ''}`;
+    });
+  }
+
   function openLoan(id) {
+    if (state.synced && id) return openLoanSynced(state.loans.find((l) => l.id === id));
     const isNew = !id;
     const loan = isNew
       ? { id: L.uid(), name: '', cur: 'COP', installment: 0, day: 10, balance: null, capital: null, paidCount: null, totalCount: null }
@@ -946,12 +1084,16 @@
       const hasSamples = state.movements.some((m) => m.sample) || state.recurring.some((r) => r.sample) || state.receivables.some((r) => r.sample);
       const rateInput = (c) => `<div><span class="field-label">1 ${c} en COP</span><input class="input num" data-rate="${c}" inputmode="decimal" value="${String(s.rates[c]).replace('.', ',')}"></div>`;
       return `<h3>Ajustes</h3>
+        <span class="field-label">Planilla de Google</span>
+        ${syncCard()}
+
         <span class="field-label">Alertas · avisarme al llegar al</span>
         <div class="pills">${[70, 80, 90].map((n) => `<button class="pill ${n === s.threshold ? 'on' : ''}" data-act="threshold" data-v="${n}">${n}%</button>`).join('')}</div>
 
         <span class="field-label">Calendario</span>
+        ${state.synced ? `<div class="notice green" style="margin-top:0">Los vencimientos se agregan solos al calendario «Cuentas Casa» de Google, a las 9:00 y con tus avisos.</div>` : `
         <div class="card setting-row"><span><b>Agregar vencimientos</b><small>Archivo .ics: eventos a las 9:00 con tus avisos, próximos 12 meses. Abrilo en el teléfono para sumarlos.</small></span>
-          <button class="pill on" data-act="ics">Descargar</button></div>
+          <button class="pill on" data-act="ics">Descargar</button></div>`}
 
         <span class="field-label">Monedas</span>
         <div class="card">
@@ -968,14 +1110,27 @@
           <label class="secondary" style="margin-top:0">Importar Excel (.xlsx)<input type="file" accept=".xlsx,.xls" data-import="xlsx" hidden></label>
           <button class="secondary" data-act="export-csv">Exportar movimientos (CSV)</button>
           <button class="secondary" data-act="export-json">Copia de seguridad</button>
-          <label class="secondary">Restaurar copia<input type="file" accept="application/json,.json" data-import="json" hidden></label>
+          ${state.synced ? '' : '<label class="secondary">Restaurar copia<input type="file" accept="application/json,.json" data-import="json" hidden></label>'}
           <p class="lead" style="margin:10px 0 0">Excel: se lee la hoja «Movimientos Reales» (Fecha, Categoría, Descripción, Moneda, Importe, Medio de pago, Comentarios).</p>
         </div>
 
-        <span class="field-label">Datos</span>
+        ${state.synced ? '' : `<span class="field-label">Datos</span>
         ${hasSamples ? '<button class="secondary" data-act="clear-samples">Quitar datos de ejemplo</button>' : ''}
-        <button class="danger-link" data-act="reset">Borrar todo y empezar de cero</button>`;
+        <button class="danger-link" data-act="reset">Borrar todo y empezar de cero</button>`}`;
     }, (sheet) => {
+      const form = sheet.querySelector('#sync-form');
+      if (form) {
+        form.onsubmit = (e) => {
+          e.preventDefault();
+          const url = form.url.value.trim();
+          const token = form.token.value.trim();
+          if (!/^https:\/\/script\.google\.com\//.test(url) || !token) return toast('Revisá la dirección (script.google.com/…/exec) y el código', 'red');
+          connect(url, token, form.quien.value);
+        };
+        form.querySelectorAll('input[name="quien"]').forEach((radio) => {
+          radio.onchange = () => form.querySelectorAll('label.pill').forEach((l) => l.classList.toggle('on', l.contains(form.querySelector('input[name="quien"]:checked'))));
+        });
+      }
       sheet.querySelectorAll('[data-rate]').forEach((inp) => {
         inp.onchange = () => {
           const v = L.parseNumber(inp.value);
@@ -995,6 +1150,34 @@
         };
       });
     });
+    ui.sheet.isSettings = true;
+  }
+
+  function syncCard() {
+    if (isSynced()) {
+      const when = sync.lastSync ? new Date(sync.lastSync).toLocaleString('es-CO', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : '—';
+      const status = sync.error ? `<div class="notice red">${esc(sync.error)}${sync.pending.length ? ` · ${sync.pending.length} cambios por enviar` : ''}</div>`
+        : sync.pending.length ? `<div class="notice amber">${sync.pending.length} cambios enviándose…</div>` : '';
+      return `<div class="card">
+          <div class="kv"><span>Estado</span><b class="tone-green">Conectada${sync.user ? ' · ' + esc(sync.user) : ''}</b></div>
+          <div class="kv"><span>Última sincronización</span><b>${esc(when)}</b></div>
+          ${status}
+          <button class="secondary" data-act="sync-now">Sincronizar ahora</button>
+          <button class="danger-link" data-act="sync-off">Desconectar</button>
+        </div>`;
+    }
+    return `<div class="card">
+        <p class="lead" style="margin:0 0 10px">Conectá la app a la planilla para compartir los datos entre los dos. Lo más simple es abrir el enlace de «Cuentas Casa → 2. Conectar la app» en la planilla.</p>
+        <form id="sync-form">
+          <input class="input" name="url" placeholder="https://script.google.com/…/exec" autocomplete="off">
+          <input class="input" name="token" placeholder="Código de acceso" autocomplete="off" style="margin-top:8px">
+          <div class="two" style="margin-top:8px">
+            <label class="pill on" style="text-align:center"><input type="radio" name="quien" value="Alan" checked hidden> Alan</label>
+            <label class="pill" style="text-align:center"><input type="radio" name="quien" value="Karo" hidden> Karo</label>
+          </div>
+          <button class="primary" style="margin-top:12px">Conectar</button>
+        </form>
+      </div>`;
   }
 
   async function updateRates() {
@@ -1155,6 +1338,19 @@
     },
     'form-save': () => saveForm(),
     'rates-update': () => updateRates(),
+    'sync-now': async () => {
+      sync.error = null;
+      try {
+        if (sync.pending.length) await push();
+        else await pull();
+        toast(sync.error ? `No se pudo sincronizar: ${sync.error}` : 'Sincronizado', sync.error ? 'red' : 'green');
+      } catch (e) {
+        sync.error = e.message;
+        toast(`No se pudo sincronizar: ${e.message}`, 'red');
+      }
+      if (ui.sheet) renderSheet();
+    },
+    'sync-off': () => disconnect(),
     'export-csv': () => download(`cuentas-casa-${today}.csv`, '﻿' + L.toCSV(state), 'text/csv'),
     'export-json': () => download(`cuentas-casa-backup-${today}.json`, JSON.stringify(state, null, 2), 'application/json'),
     'clear-samples': () => {
@@ -1185,4 +1381,16 @@
 
   renderScreen();
   showOverdueNotice();
+
+  // Enlace de conexión generado desde la planilla (Cuentas Casa → Conectar la app).
+  const link = L.parseConnectHash(location.hash);
+  if (link) {
+    history.replaceState(null, '', location.pathname + location.search);
+    connect(link.url, link.token, link.user);
+  } else if (isSynced()) {
+    poll();
+  }
+  setInterval(poll, POLL_MS);
+  document.addEventListener('visibilitychange', poll);
+  window.addEventListener('online', poll);
 })();

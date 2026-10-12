@@ -152,3 +152,87 @@ test('lectura de ticket: comercio, total, fecha y categoría sugerida', () => {
   const r = L.parseReceipt('ALMACENES EXITO S.A.\nNIT 890.900.608\nFecha: 11/10/2026\nLeche 4.500\nPan 6.200\nSUBTOTAL 10.700\nTOTAL $ 10.700\nCambio 0');
   assert.deepEqual(r, { merchant: 'ALMACENES EXITO S.A.', total: 10700, date: '2026-10-11', cat: 'Alimentación', sub: 'Supermercado' });
 });
+
+// ---------- Sincronización ----------
+const TABLES = {
+  'Movimientos': [
+    { ID: 'M1', Fecha: '2026-10-01', Tipo: 'Ingreso', 'Categoría': 'Ingresos', 'Subcategoría': 'Sueldo Karo', Moneda: 'COP', Importe: 7600000, Entidad: 'Banco' },
+    { ID: 'M2', Fecha: '2026-10-03', Tipo: 'Gasto', 'Categoría': 'Gastos_Fijos', 'Subcategoría': 'Luz', Moneda: 'COP', Importe: 187940, Comentarios: 'EPM' },
+  ],
+  'Facturas': [{ ID: 'F1', Nombre: 'Préstamo N°1', 'Categoría': 'Obligaciones_financieras', 'Subcategoría': 'Préstamo N°1', Moneda: 'ARS',
+    Importe: 173088.92, Vence: '2026-10-10', Pagada: 'No', 'Préstamo ID': 'P1', 'Avisos (días antes)': '3,0', 'Evento de calendario': 'ev1' }],
+  'Recurrentes': [
+    { ID: 'R1', Nombre: 'Celular', 'Categoría': 'Gastos_Fijos', 'Subcategoría': 'Celular', Moneda: 'COP', Importe: 32000, 'Día': 29, 'Avisos (días antes)': 7, Activa: 'Sí' },
+    { ID: 'R2', Nombre: 'Alquiler', 'Categoría': 'Gastos_Fijos', Moneda: 'COP', Importe: 1600000, 'Día': 16, Activa: 'No' },
+  ],
+  'Por cobrar': [{ ID: 'C1', 'Fecha de emisión': '2026-09-01', NIT: '900', Cliente: 'Clínica', Moneda: 'COP', Valor: 1000000, Vence: '2026-10-01', Estado: 'Pendiente' }],
+  'Categorías': [
+    { 'Categoría': 'Gastos_Fijos', 'Subcategoría': 'Luz', Tipo: 'Gasto' }, { 'Categoría': 'Gastos_Fijos', 'Subcategoría': 'Celular', Tipo: 'Gasto' },
+    { 'Categoría': 'Obligaciones_financieras', 'Subcategoría': 'Préstamo N°1', Tipo: 'Gasto' },
+    { 'Categoría': 'Ingresos', 'Subcategoría': 'Sueldo Alan', Tipo: 'Ingreso' }, { 'Categoría': 'Ingresos', 'Subcategoría': 'Sueldo Karo', Tipo: 'Ingreso' },
+  ],
+  'Ajustes': [{ Ajuste: 'Tasa ARS (COP por 1 ARS)', Valor: 2.13845 }, { Ajuste: 'Umbral de aviso de presupuesto', Valor: 0.9 }],
+  'Deudas': [{ ID: 'P1', 'Préstamo': 'Préstamo N°1', Moneda: 'ARS', Capital: 2500000, 'Plazo (cuotas)': 42, 'Día de vencimiento': 10,
+    'Próxima cuota': 172533.76, 'Saldo actual': 1821028.66, 'Cuotas vencidas': 22 }],
+  'Presupuesto': [
+    { Mes: '2025-10-01', 'Categoría': 'Gastos_Fijos', Moneda: 'COP', Importe: 3000000 },
+    { Mes: '2025-10-01', 'Categoría': 'Gastos_Fijos', Moneda: 'COP', Importe: 1075013 },
+    { Mes: '2025-09-01', 'Categoría': 'Gastos_Fijos', Moneda: 'COP', Importe: 1 },
+  ],
+  'Listas': [{ 'Medio de pago': 'Efectivo' }, { 'Medio de pago': 'Cheques' }],
+};
+
+test('sheetToState arma el estado de la app desde la planilla', () => {
+  const s = L.sheetToState(TABLES, { settings: { displayCur: 'USD' } }, TODAY);
+  assert.equal(s.synced, true);
+  assert.equal(s.settings.displayCur, 'USD');
+  assert.equal(s.settings.rates.ARS, 2.13845);
+  assert.equal(s.settings.threshold, 90);
+  assert.deepEqual(s.categories.map((c) => [c.name, c.limit, c.subs]), [
+    ['Gastos fijos', 4075013, ['Luz', 'Celular']], ['Obligaciones financieras', 0, ['Préstamo N°1']]]);
+  assert.deepEqual(s.incomeCats, ['Sueldo Alan', 'Sueldo Karo']);
+  assert.deepEqual(s.methods, ['Efectivo', 'Cheques']);
+  assert.deepEqual(s.movements.map((m) => [m.type, m.cat, m.sub]), [['inc', 'Sueldo Karo', ''], ['exp', 'Gastos fijos', 'Luz']]);
+  assert.deepEqual(s.bills[0].alerts, [3, 0]);
+  assert.equal(s.bills[0].loanId, 'P1');
+  assert.deepEqual(s.recurring.map((r) => [r.id, r.alerts]), [['R1', [7]]]);
+  assert.equal(s.receivables[0].collected, false);
+  assert.deepEqual(s.loans[0], { id: 'P1', name: 'Préstamo N°1', cur: 'ARS', installment: 172533.76, day: 10,
+    balance: 1821028.66, capital: 2500000, paidCount: 22, totalCount: 42 });
+  // El estado convertido funciona con las reglas de negocio.
+  assert.equal(L.categoryStats(s, '2026-10', TODAY)[0].spent, 187940);
+});
+
+test('stateToRows vuelve a los nombres de la planilla y diffRows detecta solo cambios', () => {
+  const s = L.sheetToState(TABLES, null, TODAY);
+  const before = L.stateToRows(s);
+  assert.deepEqual(L.diffRows(before, L.stateToRows(s)), []);
+  assert.equal(before['Movimientos'][1]['Categoría'], 'Gastos_Fijos');
+  assert.equal(before['Movimientos'][0]['Categoría'], 'Ingresos');
+  assert.equal(before['Movimientos'][0]['Subcategoría'], 'Sueldo Karo');
+
+  s.bills[0].paid = true;
+  s.bills[0].paidAt = '2026-10-12';
+  s.movements.splice(0, 1);
+  s.movements.push({ id: 'n1', date: '2026-10-12', type: 'exp', cat: 'Gastos fijos', sub: 'Celular', note: '', amount: 30000, cur: 'COP', method: 'Efectivo' });
+  s.settings.threshold = 80;
+  const ops = L.diffRows(before, L.stateToRows(s));
+  assert.deepEqual(ops.map((o) => [o.table, o.op, o.row.ID || o.row.Ajuste]), [
+    ['Movimientos', 'upsert', 'n1'],
+    ['Movimientos', 'delete', 'M1'],
+    ['Facturas', 'upsert', 'F1'],
+    ['Ajustes', 'upsert', 'Umbral de aviso de presupuesto'],
+  ]);
+  const bill = ops.find((o) => o.table === 'Facturas').row;
+  assert.equal(bill['Pagada'], 'Sí');
+  assert.equal(bill['Avisos (días antes)'], '3,0');
+  assert.equal(bill['Evento de calendario'], undefined, 'la app no pisa columnas que no maneja');
+  assert.equal(ops.find((o) => o.row.ID === 'n1').row['Categoría'], 'Gastos_Fijos');
+});
+
+test('parseConnectHash solo acepta direcciones de Apps Script', () => {
+  assert.deepEqual(L.parseConnectHash('#conectar=https%3A%2F%2Fscript.google.com%2Fmacros%2Fs%2Fabc%2Fexec&token=t1&quien=Karo'),
+    { url: 'https://script.google.com/macros/s/abc/exec', token: 't1', user: 'Karo' });
+  assert.equal(L.parseConnectHash('#conectar=https%3A%2F%2Fevil.com%2Fx&token=t1'), null);
+  assert.equal(L.parseConnectHash(''), null);
+});
