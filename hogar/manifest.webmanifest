@@ -1,0 +1,10 @@
+{
+  "name": "Cuentas Casa",
+  "short_name": "Cuentas Casa",
+  "lang": "es-CO",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "background_color": "#F6F4EF",
+  "theme_color": "#F6F4EF",
+  "icons": [{ "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }]
+}

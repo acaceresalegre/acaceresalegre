@@ -1,30 +1,62 @@
-# 🏠 Hogar — finanzas, tareas y calendario
+# Cuentas Casa
 
-App web de uso hogareño para organizar en un solo lugar:
+App móvil (web) de finanzas del hogar para Alan y Karo, hecha a partir del handoff de diseño «Cuentas Casa».
+Controla ingresos, gastos y presupuesto por categoría, y sobre todo **las facturas por pagar según su vencimiento**,
+con calendario y alertas. También lleva hipotecas, préstamos y facturas por cobrar.
 
-- **Inicio**: resumen del mes (ingresos, gastos, balance), tareas de hoy/atrasadas, agenda de los próximos 7 días y estado de los presupuestos.
-- **Finanzas**: registro de ingresos y gastos por categoría y miembro, navegación por mes, gastos por categoría y movimientos filtrables.
-- **Tareas**: responsable, vencimiento, prioridad y repetición (diaria, semanal, mensual). Al completar una tarea repetitiva se agenda automáticamente la siguiente.
-- **Calendario**: vista mensual con eventos y tareas pendientes; tocá un día para ver el detalle o agregar un evento.
-- **Ajustes**: miembros del hogar, categorías, presupuestos mensuales por categoría, y copia de seguridad (exportar/importar JSON).
+Moneda base COP, con ARS y USD para cargar y visualizar.
+
+## Pantallas
+
+- **Inicio**: saldo del mes, facturas por pagar, «te quedaría a fin de mes», alertas, próximos vencimientos, presupuesto y últimos movimientos.
+- **Vencimientos**: calendario mensual con puntos de estado (vencida / por vencer / pagada), lista agrupada y check de pago. Pestaña *Por cobrar* para las facturas emitidas por Karo (al cobrarlas se crea el ingreso en «Sueldo Karo»).
+- **Presupuesto**: este mes (gastado, proyección de cierre, umbral de aviso 70/80/90 %, una tarjeta por categoría) y año (ahorro, gráfico mensual contra presupuesto, comparación por categoría).
+- **Deudas**: hipotecas y préstamos con su cuota mensual, estado, saldo y avance.
+- **+**: agregar gasto, ingreso o factura (con repetición mensual y recordatorios), mostrando el impacto en el presupuesto antes de guardar.
+- **Escanear**: foto de un ticket o factura → lee comercio, total y fecha y abre el formulario ya completo para revisar.
+- **⋯ Ajustes**: umbral de alertas, tasas de cambio, categorías, calendario, importar/exportar y datos.
 
 ## Cómo usarla
 
-No necesita instalación ni servidor: abrí `index.html` en el navegador.
-También se puede publicar tal cual en GitHub Pages o cualquier hosting estático.
+No necesita instalación ni servidor: se abre `index.html`. Para usarla en el celular conviene publicarla
+(por ejemplo con GitHub Pages) y elegir «Agregar a pantalla de inicio».
 
-Los datos se guardan en el navegador (`localStorage`), por lo que quedan solo en ese
-dispositivo. Usá **Ajustes → Exportar datos** para respaldarlos o pasarlos a otro equipo.
+Los datos se guardan en el dispositivo (`localStorage`). Para pasarlos a otro equipo: **Ajustes → Copia de seguridad / Restaurar copia**.
+
+La primera vez se cargan **datos de ejemplo** para ver la app funcionando; se quitan con **Ajustes → Quitar datos de ejemplo**
+(se conservan las categorías y los préstamos).
+
+## Qué viene de `finanzas 26.xlsx` y qué es ejemplo
+
+| Dato | Origen |
+| --- | --- |
+| Categorías, ingresos y medios de pago | Handoff (hoja `Datos`) |
+| Cuotas y días de vencimiento de los 5 préstamos | Handoff (hoja `Deudas`) |
+| Tasas de cambio iniciales | Handoff (TRM y XE, oct 2026) |
+| Límites por categoría, subcategorías, facturas fijas, movimientos y cobros | **Ejemplo**: editar en la app o importar |
+| Saldo, capital y cantidad de cuotas de cada préstamo | Se cargan tocando cada préstamo en Deudas |
+
+## Integraciones
+
+- **Calendario**: se descarga un archivo `.ics` (eventos a las 9:00 con los avisos de cada factura, próximos 12 meses) que se abre con el calendario del teléfono.
+- **Excel**: importa la hoja «Movimientos Reales» (Fecha, Categoría, Descripción, Moneda, Importe, Medio de pago, Comentarios). Exporta los movimientos a CSV.
+- **Tasas de cambio**: «Actualizar en línea» toma la TRM de datos.gov.co y el ARS de open.er-api.com; también se pueden cargar a mano.
+- **Lectura de tickets**: OCR en el propio navegador con Tesseract.js (no se envían fotos a ningún servidor).
+
+Excel y OCR descargan su librería la primera vez que se usan, así que necesitan conexión.
+
+**Pendiente** respecto del handoff: sincronización con Google Sheets (requiere un proyecto de Google con OAuth),
+notificaciones push con la app cerrada y división de gastos por persona.
 
 ## Estructura
 
 | Archivo | Contenido |
 | --- | --- |
-| `index.html` | Estructura de las pantallas |
-| `styles.css` | Estilos (responsive, modo oscuro automático) |
-| `lib.js` | Lógica pura: resúmenes, presupuestos, fechas, recurrencias |
-| `app.js` | Interfaz y manejo de eventos |
-| `tests/` | Tests de la lógica |
+| `index.html` | Estructura base y barra de pestañas |
+| `styles.css` | Tokens y estilos del diseño (Figtree, paleta cálida) |
+| `lib.js` | Reglas de negocio puras: conversión, vencimientos, presupuesto, proyección, alertas, ICS, CSV, importación, lectura de tickets |
+| `app.js` | Pantallas, hojas inferiores e interacciones |
+| `tests/` | Tests de las reglas de negocio |
 
 ## Tests
 
