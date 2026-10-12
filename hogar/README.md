@@ -24,7 +24,18 @@ Está publicada con GitHub Pages en **https://acaceresalegre.github.io/acaceresa
 En el celular: abrir esa dirección y elegir «Agregar a pantalla de inicio» (Safari: botón Compartir; Chrome: menú ⋮).
 También funciona abriendo `index.html` directamente, sin servidor.
 
-Los datos se guardan en el dispositivo (`localStorage`). Para pasarlos a otro equipo: **Ajustes → Copia de seguridad / Restaurar copia**.
+Sin conectar, los datos se guardan solo en el dispositivo (`localStorage`). Para pasarlos a otro equipo: **Ajustes → Copia de seguridad / Restaurar copia**.
+
+### Datos compartidos con Google Sheets
+
+Conectada a la planilla «Cuentas Casa - base de datos», la app lee y escribe ahí, y Alan y Karo ven los mismos datos
+(los cambios del otro llegan en unos 20 segundos). Los vencimientos se agregan solos a un calendario de Google
+«Cuentas Casa». La instalación, paso a paso, está en [`apps-script/INSTALAR.md`](apps-script/INSTALAR.md).
+
+- La planilla es la fuente de verdad. Cada cambio se envía como alta, cambio o baja de una fila (identificada por su ID);
+  si no hay conexión queda pendiente y se envía al volver.
+- Las facturas de cada mes (recurrentes y cuotas de préstamos) las crea el programa de la planilla, una vez por hora.
+- Límites de presupuesto, préstamos y cuotas se editan en la planilla; la app los muestra.
 
 La primera vez se cargan **datos de ejemplo** para ver la app funcionando; se quitan con **Ajustes → Quitar datos de ejemplo**
 (se conservan las categorías y los préstamos).
@@ -41,15 +52,14 @@ La primera vez se cargan **datos de ejemplo** para ver la app funcionando; se qu
 
 ## Integraciones
 
-- **Calendario**: se descarga un archivo `.ics` (eventos a las 9:00 con los avisos de cada factura, próximos 12 meses) que se abre con el calendario del teléfono.
+- **Calendario**: con la planilla conectada, eventos automáticos en Google Calendar. Sin conectar, se descarga un archivo `.ics` (eventos a las 9:00 con los avisos de cada factura, próximos 12 meses).
 - **Excel**: importa la hoja «Movimientos Reales» (Fecha, Categoría, Descripción, Moneda, Importe, Medio de pago, Comentarios). Exporta los movimientos a CSV.
 - **Tasas de cambio**: «Actualizar en línea» toma la TRM de datos.gov.co y el ARS de open.er-api.com; también se pueden cargar a mano.
 - **Lectura de tickets**: OCR en el propio navegador con Tesseract.js (no se envían fotos a ningún servidor).
 
 Excel y OCR descargan su librería la primera vez que se usan, así que necesitan conexión.
 
-**Pendiente** respecto del handoff: sincronización con Google Sheets (requiere un proyecto de Google con OAuth),
-notificaciones push con la app cerrada y división de gastos por persona.
+**Pendiente** respecto del handoff: notificaciones push con la app cerrada y división de gastos por persona.
 
 ## Estructura
 
@@ -58,8 +68,9 @@ notificaciones push con la app cerrada y división de gastos por persona.
 | `index.html` | Estructura base y barra de pestañas |
 | `styles.css` | Tokens y estilos del diseño (Figtree, paleta cálida) |
 | `lib.js` | Reglas de negocio puras: conversión, vencimientos, presupuesto, proyección, alertas, ICS, CSV, importación, lectura de tickets |
-| `app.js` | Pantallas, hojas inferiores e interacciones |
-| `tests/` | Tests de las reglas de negocio |
+| `app.js` | Pantallas, hojas inferiores, interacciones y sincronización |
+| `apps-script/Codigo.gs` | Programa de la planilla: API para la app, facturas de cada mes y Google Calendar |
+| `tests/` | Tests de las reglas de negocio y del programa de la planilla (sobre una planilla simulada, `fake-gas.js`) |
 
 ## Tests
 
