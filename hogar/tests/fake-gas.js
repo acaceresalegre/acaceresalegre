@@ -88,6 +88,7 @@ function createGas(tables, opts = {}) {
   const sheets = Object.fromEntries(Object.entries(tables).map(([n, d]) => [n, new FakeSheet(n, d)]));
   const props = { token: opts.token || 'secreto' };
   const calendars = [];
+  const ui = { prompts: [], promptAnswer: null, dialogs: [], alerts: [] };
   const now = opts.now || (() => new Date());
 
   const Utilities = {
@@ -114,12 +115,21 @@ function createGas(tables, opts = {}) {
         getSheetByName: (n) => sheets[n] || null,
         getSpreadsheetTimeZone: () => 'America/Bogota',
       }),
-      getUi: () => ({ ButtonSet: { OK: 'ok', OK_CANCEL: 'okc' }, Button: { OK: 'ok' }, alert() {}, createMenu() { return { addItem() { return this; }, addSeparator() { return this; }, addToUi() {} }; } }),
+      getUi: () => ({
+        ButtonSet: { OK: 'ok', OK_CANCEL: 'okc' }, Button: { OK: 'ok', CANCEL: 'cancel' },
+        alert: (...a) => ui.alerts.push(a.join(' ')),
+        prompt: (title) => {
+          ui.prompts.push(title);
+          return { getSelectedButton: () => (ui.promptAnswer === null ? 'cancel' : 'ok'), getResponseText: () => ui.promptAnswer || '' };
+        },
+        showModalDialog: (html, title) => ui.dialogs.push({ title, html: html.html }),
+        createMenu() { return { addItem() { return this; }, addSeparator() { return this; }, addToUi() {} }; } }),
     },
     PropertiesService: {
       getScriptProperties: () => ({
         getProperty: (k) => (k in props ? props[k] : null),
         setProperty: (k, v) => { props[k] = String(v); },
+        deleteProperty: (k) => { delete props[k]; },
       }),
     },
     LockService: { getScriptLock: () => ({ waitLock() {}, releaseLock() {} }) },
@@ -134,13 +144,14 @@ function createGas(tables, opts = {}) {
     },
     ScriptApp: { getProjectTriggers: () => [], deleteTrigger() {}, newTrigger: () => ({ timeBased() { return this; }, everyHours() { return this; }, create() {} }) },
     Utilities,
+    HtmlService: { createHtmlOutput: (html) => ({ html, setWidth() { return this; }, setHeight() { return this; } }) },
   };
   vm.createContext(sandbox);
   const code = fs.readFileSync(path.join(__dirname, '..', 'apps-script', 'Codigo.gs'), 'utf8');
   vm.runInContext(code, sandbox);
 
   return {
-    sheets, props, calendars, sandbox,
+    sheets, props, calendars, sandbox, ui,
     get(params) { return JSON.parse(sandbox.doGet({ parameter: params }).text); },
     post(body) { return JSON.parse(sandbox.doPost({ postData: { contents: JSON.stringify(body) } }).text); },
     run(fn) { return sandbox[fn](); },

@@ -144,7 +144,11 @@
     } catch (e) {
       Object.assign(sync, prev);
       saveSync();
-      toast(`No se pudo conectar: ${e.message}`, 'red');
+      // fetch falla sin respuesta cuando la dirección no es la de la implementación publicada.
+      const msg = e instanceof TypeError
+        ? 'La planilla no respondió. Revisá que la dirección sea la de Implementar → Gestionar implementaciones (termina en /exec).'
+        : e.message;
+      toast(`No se pudo conectar: ${msg}`, 'red');
     }
   }
 

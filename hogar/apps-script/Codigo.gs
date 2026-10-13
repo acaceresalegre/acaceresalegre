@@ -411,6 +411,7 @@ function onOpen() {
   SpreadsheetApp.getUi().createMenu('Cuentas Casa')
     .addItem('1. Instalar', 'instalar')
     .addItem('2. Conectar la app', 'conectarApp')
+    .addItem('Cambiar la dirección de la app web', 'cambiarDireccion')
     .addSeparator()
     .addItem('Crear facturas y actualizar calendario ahora', 'tareaPeriodica')
     .addToUi();
@@ -456,12 +457,21 @@ function conectarApp() {
   var ui = SpreadsheetApp.getUi();
   var token = PropertiesService.getScriptProperties().getProperty('token');
   if (!token) { ui.alert('Primero usá «1. Instalar».'); return; }
-  var url = ScriptApp.getService().getUrl();
-  if (!url || !/\/exec$/.test(url)) {
+  // No se usa ScriptApp.getService().getUrl(): en el editor nuevo puede devolver una dirección
+  // que termina en /exec pero no es la implementación publicada. Se pide una vez y se guarda.
+  var props = PropertiesService.getScriptProperties();
+  var url = props.getProperty('webAppUrl');
+  if (!url) {
     var res = ui.prompt('Dirección de la aplicación web',
-      'Pegá la URL que termina en /exec (Implementar → Gestionar implementaciones).', ui.ButtonSet.OK_CANCEL);
+      'Pegá la URL de la aplicación web (Apps Script → Implementar → Gestionar implementaciones). Termina en /exec.',
+      ui.ButtonSet.OK_CANCEL);
     if (res.getSelectedButton() !== ui.Button.OK) return;
-    url = res.getResponseText().trim();
+    url = res.getResponseText().replace(/\s+/g, '');
+    if (!/^https:\/\/script\.google\.com\/.+\/exec$/.test(url)) {
+      ui.alert('Esa dirección no parece la de la aplicación web: tiene que empezar con https://script.google.com/ y terminar en /exec.');
+      return;
+    }
+    props.setProperty('webAppUrl', url);
   }
   var link = function (who) {
     return APP_URL + '#conectar=' + encodeURIComponent(url) + '&token=' + token + '&quien=' + encodeURIComponent(who);
@@ -470,6 +480,13 @@ function conectarApp() {
     '<p>Abrí el enlace de cada uno <b>en su celular</b> (por ejemplo, mandándoselo por WhatsApp a uno mismo):</p>' +
     '<p><a target="_blank" href="' + link('Alan') + '">Conectar la app de Alan</a></p>' +
     '<p><a target="_blank" href="' + link('Karo') + '">Conectar la app de Karo</a></p>' +
-    '<p style="color:#6F6B63">Los enlaces incluyen el código de acceso a la planilla: no los compartas con nadie más.</p></div>';
-  ui.showModalDialog(HtmlService.createHtmlOutput(html).setWidth(420).setHeight(260), 'Conectar la app');
+    '<p style="color:#6F6B63">Si el enlace no funciona, en la app andá a Ajustes → Planilla de Google y cargá a mano:</p>' +
+    '<p style="font:12px monospace;word-break:break-all">Dirección: ' + url + '<br>Código: ' + token + '</p>' +
+    '<p style="color:#6F6B63">Los enlaces y el código dan acceso a la planilla: no los compartas con nadie más.</p></div>';
+  ui.showModalDialog(HtmlService.createHtmlOutput(html).setWidth(460).setHeight(380), 'Conectar la app');
+}
+
+function cambiarDireccion() {
+  PropertiesService.getScriptProperties().deleteProperty('webAppUrl');
+  conectarApp();
 }

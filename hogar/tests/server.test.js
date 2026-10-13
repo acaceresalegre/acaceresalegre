@@ -150,3 +150,23 @@ test('instalar corrige la tasa ARS redondeada', () => {
   gas.run('instalar');
   assert.equal(rowsOf(gas, 'Ajustes')[0][1], 2.13845);
 });
+
+test('conectar la app pide la dirección publicada una vez y la usa en los enlaces', () => {
+  const gas = createGas(planilla(), { now: NOW });
+  gas.ui.promptAnswer = 'https://script.google.com/macros/s/OTRA/dev';
+  gas.run('conectarApp');
+  assert.equal(gas.props.webAppUrl, undefined, 'rechaza una dirección que no termina en /exec');
+  assert.equal(gas.ui.dialogs.length, 0);
+
+  gas.ui.promptAnswer = ' https://script.google.com/macros/s/AKfyc123/exec\n';
+  gas.run('conectarApp');
+  assert.equal(gas.props.webAppUrl, 'https://script.google.com/macros/s/AKfyc123/exec');
+  const html = gas.ui.dialogs[0].html;
+  assert.ok(html.includes('#conectar=' + encodeURIComponent('https://script.google.com/macros/s/AKfyc123/exec') + '&token=secreto&quien=Alan'));
+  assert.ok(html.includes('Código: secreto'));
+
+  gas.ui.promptAnswer = null;
+  gas.run('conectarApp');
+  assert.equal(gas.ui.prompts.length, 2, 'la segunda vez usa la dirección guardada');
+  assert.equal(gas.ui.dialogs.length, 2);
+});
