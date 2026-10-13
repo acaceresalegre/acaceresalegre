@@ -12,10 +12,10 @@ Moneda base COP, con ARS y USD para cargar y visualizar.
 - **Vencimientos**: calendario mensual con puntos de estado (vencida / por vencer / pagada), lista agrupada y check de pago. Pestaña *Por cobrar* para las facturas emitidas por Karo (al cobrarlas se crea el ingreso en «Sueldo Karo»).
 - **Presupuesto**: este mes (gastado, proyección de cierre, umbral de aviso 70/80/90 %, una tarjeta por categoría) y año (ahorro, gráfico mensual contra presupuesto, comparación por categoría).
 - **Deudas**: hipotecas y préstamos con su cuota mensual, estado, saldo y avance.
-- **+**: agregar gasto, ingreso o factura (con repetición mensual y recordatorios), mostrando el impacto en el presupuesto antes de guardar.
+- **+**: agregar gasto, ingreso o factura (con repetición mensual y recordatorios), mostrando el impacto en el presupuesto antes de guardar. Al escribir el comentario sugiere la categoría (reglas de la pestaña Reglas o lo usado antes) y permite indicar, opcionalmente, quién pagó.
 - **Escanear**: foto de un ticket o factura → lee comercio, total y fecha y abre el formulario ya completo para revisar.
-- **Computadora** (pantallas de 1024 px o más): menú lateral y pestaña **Resumen** con indicadores del mes (ahorro, ingresos, gastos, tasa de ahorro y presupuesto usado, comparados con el mes anterior), gráficos de ingresos y gastos de los últimos 12 meses, gasto acumulado contra presupuesto con proyección de cierre y gasto por categoría, más vencimientos y alertas. Los gráficos muestran los valores al pasar el mouse.
-- **Movimientos**: lista completa con búsqueda, filtros (período, tipo, categoría, medio de pago), orden por fecha o importe, totales, edición y exportación a CSV de lo filtrado.
+- **Computadora** (pantallas de 1024 px o más): menú lateral y pestaña **Resumen** con indicadores del mes (ahorro, ingresos, gastos, tasa de ahorro y presupuesto usado, comparados con el mes anterior), gráficos de ingresos y gastos de los últimos 12 meses, gasto acumulado contra presupuesto con proyección de cierre, gasto por categoría y por persona, más vencimientos y alertas. Los gráficos muestran los valores al pasar el mouse.
+- **Movimientos**: lista completa con búsqueda, filtros (período, tipo, categoría, medio de pago, persona), orden por fecha o importe, totales, edición y exportación a CSV de lo filtrado.
 - **⋯ Ajustes**: umbral de alertas, tasas de cambio, categorías, calendario, importar/exportar y datos.
 
 ## Cómo usarla
@@ -38,6 +38,10 @@ Conectada a la planilla «Cuentas Casa - base de datos», la app lee y escribe a
   si no hay conexión queda pendiente y se envía al volver.
 - Las facturas de cada mes (recurrentes y cuotas de préstamos) las crea el programa de la planilla, una vez por hora.
 - Límites de presupuesto, préstamos y cuotas se editan en la planilla; la app los muestra.
+- Cada movimiento guarda quién lo cargó (**Cargado por**, según el enlace con el que se conectó cada uno) y,
+  si se indica, quién pagó (**Pagó**). Los totales por persona usan «Pagó» y, si está vacío, «Cargado por».
+- Mails de cierre: un **cierre preliminar** 4 días antes de fin de mes para corregir lo que falte y un **resumen**
+  el día 1, a las direcciones de **Ajustes → Correos del resumen** de la planilla.
 
 La primera vez se cargan **datos de ejemplo** para ver la app funcionando; se quitan con **Ajustes → Quitar datos de ejemplo**
 (se conservan las categorías y los préstamos).

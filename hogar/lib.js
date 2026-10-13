@@ -196,6 +196,20 @@
     return { income, expense, pending, balance: income - expense, remaining: income - expense - pending, hasData: income + expense > 0 };
   }
 
+  // Ingresos y gastos (COP) del mes por persona, solo movimientos (las facturas no tienen persona).
+  function spendByPerson(state, key) {
+    const rates = state.settings.rates;
+    const map = new Map();
+    for (const m of state.movements) {
+      if (monthKey(m.date) !== key) continue;
+      const name = personOf(m) || 'Sin asignar';
+      const r = map.get(name) || { name, income: 0, expense: 0 };
+      r[m.type === 'inc' ? 'income' : 'expense'] += toCOP(m, rates);
+      map.set(name, r);
+    }
+    return [...map.values()].sort((a, b) => (a.name === 'Sin asignar') - (b.name === 'Sin asignar') || b.expense - a.expense);
+  }
+
   // ---------- Dashboard ----------
   // Ingresos y gastos (COP) de los n meses que terminan en endKey.
   function monthSeries(state, endKey, n = 12) {
@@ -247,7 +261,8 @@
       if (f.type && f.type !== 'all' && m.type !== f.type) return false;
       if (f.cat && m.cat !== f.cat) return false;
       if (f.method && m.method !== f.method) return false;
-      if (q && !norm([m.note, m.cat, m.sub, m.method].join(' ')).includes(q)) return false;
+      if (f.person && personOf(m) !== (f.person === '-' ? '' : f.person)) return false; // '-' = sin asignar
+      if (q && !norm([m.note, m.cat, m.sub, m.method, personOf(m)].join(' ')).includes(q)) return false;
       return true;
     });
     const dir = f.dir === 'asc' ? 1 : -1;
@@ -259,6 +274,41 @@
     const income = list.filter((m) => m.type === 'inc').reduce((s, m) => s + toCOP(m, rates), 0);
     const expense = list.filter((m) => m.type === 'exp').reduce((s, m) => s + toCOP(m, rates), 0);
     return { list, income, expense, net: income - expense };
+  }
+
+  // Personas de la casa: las conocidas más las que aparecen cargando o pagando movimientos.
+  function peopleOf(state) {
+    const out = [];
+    const add = (p) => { if (p && !out.some((x) => norm(x) === norm(p))) out.push(p); };
+    (state.people || []).forEach(add);
+    state.movements.forEach((m) => { add(m.paidBy); add(m.by); });
+    return out;
+  }
+
+  // Quién hizo el gasto o ingreso: el que pagó si se indicó, si no el que lo cargó.
+  const personOf = (m) => m.paidBy || m.by || '';
+
+  // Categoría sugerida para una descripción: primero las reglas de la planilla (la coincidencia más
+  // larga), después los movimientos anteriores con la misma descripción (la categoría más usada).
+  function suggestCategory(state, text, type) {
+    const q = norm(text);
+    if (q.length < 3) return null;
+    const valid = (c) => (type === 'inc' ? state.incomeCats.includes(c.cat) : state.categories.some((k) => k.name === c.cat));
+    const rule = (state.rules || [])
+      .filter((r) => r.type === type && norm(r.text) && q.includes(norm(r.text)) && valid(r))
+      .sort((a, b) => norm(b.text).length - norm(a.text).length)[0];
+    if (rule) return { cat: rule.cat, sub: rule.sub || '', source: 'regla', match: rule.text };
+    const counts = new Map();
+    for (const m of state.movements) {
+      if (m.type !== type || norm(m.note) !== q || !valid(m)) continue;
+      const k = m.cat + '|' + (m.sub || '');
+      const c = counts.get(k) || { cat: m.cat, sub: m.sub || '', n: 0, last: '' };
+      c.n++;
+      if (m.date > c.last) c.last = m.date;
+      counts.set(k, c);
+    }
+    const best = [...counts.values()].sort((a, b) => b.n - a.n || b.last.localeCompare(a.last))[0];
+    return best ? { cat: best.cat, sub: best.sub, source: 'historial' } : null;
   }
 
   // ---------- Alertas ----------
@@ -325,12 +375,12 @@
 
   function toCSV(state) {
     const q = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
-    const rows = [['Fecha', 'Tipo', 'Categoría', 'Subcategoría', 'Descripción', 'Moneda', 'Importe', 'Medio de pago']];
+    const rows = [['Fecha', 'Tipo', 'Categoría', 'Subcategoría', 'Descripción', 'Moneda', 'Importe', 'Medio de pago', 'Persona']];
     for (const m of [...state.movements].sort((a, b) => a.date.localeCompare(b.date))) {
-      rows.push([m.date, m.type === 'inc' ? 'Ingreso' : 'Gasto', m.cat, m.sub, m.note, m.cur, m.amount, m.method]);
+      rows.push([m.date, m.type === 'inc' ? 'Ingreso' : 'Gasto', m.cat, m.sub, m.note, m.cur, m.amount, m.method, personOf(m)]);
     }
     for (const b of state.bills.filter((x) => x.paid).sort((a, z) => a.due.localeCompare(z.due))) {
-      rows.push([b.due, 'Factura', b.cat, b.sub, b.name, b.cur, b.amount, b.method]);
+      rows.push([b.due, 'Factura', b.cat, b.sub, b.name, b.cur, b.amount, b.method, '']);
     }
     return rows.map((r) => r.map(q).join(';')).join('\r\n');
   }
@@ -469,6 +519,8 @@
       categories: EXPENSE_CATEGORIES.map(([name, group, limit, subs]) => ({ name, group, limit, subs })),
       incomeCats: ['Sueldo Alan', 'Sueldo Karo', 'Plazo Fijo', 'Prima', 'Bono', 'FCI', 'Otros Ingresos'],
       methods: ['Efectivo', 'Transferencia', 'Tarjeta Débito', 'Tarjeta Crédito', 'Billetera virtual'],
+      people: ['Alan', 'Karo'],
+      rules: [],
       loans: [],
       recurring: [],
       bills: [],
@@ -534,7 +586,7 @@
     const base = baseState(today);
     const s = { ...base, ...raw, settings: { ...base.settings, ...raw.settings } };
     s.settings.rates = { ...base.settings.rates, ...(raw.settings.rates || {}) };
-    for (const k of ['categories', 'incomeCats', 'methods', 'loans', 'recurring', 'bills', 'movements', 'receivables']) {
+    for (const k of ['categories', 'incomeCats', 'methods', 'people', 'rules', 'loans', 'recurring', 'bills', 'movements', 'receivables']) {
       if (!Array.isArray(s[k])) s[k] = base[k];
     }
     if (!s.categories.length) s.categories = base.categories;
@@ -630,8 +682,13 @@
         id: str(r['ID']), date: str(r['Fecha']), type: inc ? 'inc' : 'exp',
         cat: inc ? str(r['Subcategoría']) : label(r['Categoría']), sub: inc ? '' : str(r['Subcategoría']),
         note: str(r['Comentarios']), amount: num(r['Importe']), cur: str(r['Moneda']) || 'COP', method: str(r['Medio de pago']),
+        by: str(r['Cargado por']), paidBy: str(r['Pagó']),
       };
     });
+    s.rules = t('Reglas').filter((r) => str(r['Contiene']) && str(r['Activa']) !== 'No').map((r) => {
+      const inc = str(r['Tipo']) === 'Ingreso' || str(r['Categoría']) === INCOME_GROUP;
+      return { text: str(r['Contiene']), type: inc ? 'inc' : 'exp', cat: inc ? str(r['Subcategoría']) : label(r['Categoría']), sub: inc ? '' : str(r['Subcategoría']) };
+    }).filter((r) => r.cat);
     s.bills = t('Facturas').filter((r) => r['ID'] && r['Vence']).map((r) => ({
       id: str(r['ID']), templateId: str(r['Recurrente ID']) || null, name: str(r['Nombre']), cat: label(r['Categoría']),
       sub: str(r['Subcategoría']), amount: num(r['Importe']), cur: str(r['Moneda']) || 'COP', due: str(r['Vence']),
@@ -667,6 +724,7 @@
         'ID': m.id, 'Fecha': m.date, 'Tipo': m.type === 'inc' ? 'Ingreso' : 'Gasto',
         'Categoría': m.type === 'inc' ? INCOME_GROUP : code(m.cat), 'Subcategoría': m.type === 'inc' ? m.cat : (m.sub || ''),
         'Moneda': m.cur, 'Importe': m.amount, 'Medio de pago': m.method || '', 'Comentarios': m.note || '',
+        'Pagó': m.paidBy || '',
       })),
       'Facturas': s.bills.map((b) => ({
         'ID': b.id, 'Nombre': b.name, 'Categoría': code(b.cat), 'Subcategoría': b.sub || '', 'Moneda': b.cur, 'Importe': b.amount,
@@ -700,15 +758,20 @@
   const rowKey = (table, row) => (ROW_KEYS[table] || ['ID']).map((k) => str(row[k])).join('|');
 
   // Cambios entre dos versiones de las filas: upsert de lo nuevo o modificado, delete de lo que ya no está.
+  // Una columna que la versión anterior no conocía (por ejemplo «Pagó») cuenta como vacía, así una
+  // actualización de la app no reenvía todas las filas.
+  const sameRow = (a, b) => Object.keys(b).every((k) => JSON.stringify(a[k] ?? '') === JSON.stringify(b[k] ?? ''))
+    && Object.keys(a).every((k) => k in b);
   function diffRows(prev, next) {
     const ops = [];
     for (const table of Object.keys(next)) {
-      const before = new Map((prev && prev[table] || []).map((r) => [rowKey(table, r), JSON.stringify(r)]));
+      const before = new Map((prev && prev[table] || []).map((r) => [rowKey(table, r), r]));
       const seen = new Set();
       for (const row of next[table]) {
         const k = rowKey(table, row);
         seen.add(k);
-        if (before.get(k) !== JSON.stringify(row)) ops.push({ table, op: 'upsert', row });
+        const old = before.get(k);
+        if (!old || !sameRow(old, row)) ops.push({ table, op: 'upsert', row });
       }
       for (const r of (prev && prev[table]) || []) {
         if (!seen.has(rowKey(table, r))) ops.push({ table, op: 'delete', row: r });
@@ -733,6 +796,7 @@
     CURRENCIES, convert, formatMoney, formatShort, cleanDigits, groupDigits, toCOP,
     ensureRecurring, dueInfo, isUrgent, groupBills, dayDot, calendarCells,
     elapsedDays, categoryStats, monthSummary, buildAlerts, monthSeries, dailySpend, filterMovements,
+    peopleOf, personOf, suggestCategory, spendByPerson,
     toICS, toCSV, parseMovementRows, parseNumber, cellToISO, parseReceipt,
     baseState, sampleState, normalizeState, clearSamples,
   };

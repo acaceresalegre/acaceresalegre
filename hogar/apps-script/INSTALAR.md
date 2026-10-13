@@ -36,7 +36,11 @@ Igual nadie puede leer ni escribir sin el código de acceso secreto que se crea 
 3. Al terminar avisa «Listo». En ese momento:
    - se crea el calendario **Cuentas Casa** en tu Google Calendar con los vencimientos de este mes y el próximo, a las 9:00 y con avisos;
    - se programa una actualización automática cada hora (facturas nuevas de cada mes y cambios en el calendario);
-   - se corrige la tasa ARS de la pestaña Ajustes (había quedado en 2,14).
+   - se corrige la tasa ARS de la pestaña Ajustes (había quedado en 2,14);
+   - se agrega la columna **Pagó** en Movimientos, la pestaña **Reglas** y el ajuste **Correos del resumen**;
+   - se programan los mails de cierre (todos los días a las 8 revisa si corresponde mandar alguno).
+
+La versión con mails pide un permiso más: **enviar correo como vos**. Es para mandar el cierre del mes.
 
 ## 4. Conectar los celulares
 
@@ -55,6 +59,25 @@ Los enlaces incluyen el código de acceso: no los compartas con nadie más.
 - **Planilla**: botón **Compartir** → mail de Karo → Editor.
 - **Calendario**: en Google Calendar, junto a «Cuentas Casa» → **Configuración y uso compartido → Compartir con
   determinadas personas** → mail de Karo → «Hacer cambios en los eventos».
+
+## 6. Mails de cierre de mes
+
+- **Cierre preliminar**: 4 días antes de fin de mes (el 27 en los meses de 31 días). Trae las facturas del mes sin
+  marcar como pagadas, los movimientos para revisar (sin categoría o subcategoría, posibles duplicados, montos
+  inusuales), las categorías cerca del límite y lo que vence en los primeros días del mes siguiente.
+- **Resumen**: el día 1, con ingresos, gastos, ahorro, la comparación con el mes anterior, gasto por categoría
+  y gasto por persona.
+
+Quién los recibe: pestaña **Ajustes → Correos del resumen**, varias direcciones separadas por coma
+(por ejemplo `tu-mail@gmail.com, mail-de-karo@hotmail.com`). Para ver cómo llega: **Cuentas Casa → Enviar cierre
+preliminar de prueba**.
+
+## 7. Reglas de categorías
+
+En la pestaña **Reglas**, cada fila dice: si el comentario **contiene** este texto, sugerir esta categoría y
+subcategoría (Tipo `Gasto` o `Ingreso`; `Activa` en `No` la apaga). No distingue mayúsculas ni tildes, y si
+varias coinciden gana el texto más largo. Si ninguna regla coincide, la app sugiere la categoría que se usó
+antes para el mismo comentario. Elegir una categoría a mano siempre gana.
 
 ## Si algo falla
 

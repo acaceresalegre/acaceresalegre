@@ -437,3 +437,10 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 14px; }
   .notif { left: auto; right: 24px; transform: translate(0, -140%); max-width: 380px; }
   .notif.show { transform: translate(0, 0); }
 }
+
+/* Personas y sugerencias */
+.hint { font-size: 12px; font-weight: 500; color: var(--ink-2); }
+.person-row { display: block; width: 100%; text-align: left; background: none; border: 0; padding: 4px 0; font: inherit; color: inherit; cursor: pointer; }
+.person-row .kv { padding: 0 0 6px; border: 0; }
+.person-row small { color: var(--ink-2); font-weight: 500; margin-left: 4px; }
+.fill.exp { background: var(--viz-exp, #eb6834); }

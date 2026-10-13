@@ -14,7 +14,8 @@ var EVENT_HOUR = 9;
 var TABLES = {
   'Movimientos': {
     key: ['ID'], dates: ['Fecha'],
-    text: ['ID', 'Tipo', 'Categoría', 'Subcategoría', 'Moneda', 'Medio de pago', 'Entidad', 'Comentarios', 'Cargado por'],
+    text: ['ID', 'Tipo', 'Categoría', 'Subcategoría', 'Moneda', 'Medio de pago', 'Entidad', 'Comentarios', 'Cargado por', 'Pagó'],
+    addable: ['Pagó'], // columnas nuevas que se agregan solas si la planilla todavía no las tiene
   },
   'Facturas': {
     key: ['ID'], dates: ['Vence', 'Fecha de pago'],
@@ -35,8 +36,10 @@ var TABLES = {
   'Deudas': { readOnly: true, dates: ['Próximo vencimiento'] },
   'Presupuesto': { readOnly: true, dates: ['Mes'] },
   'Listas': { readOnly: true, dates: [] },
+  'Reglas': { readOnly: true, dates: [], optional: true },
 };
-var PULL_TABLES = ['Movimientos', 'Facturas', 'Recurrentes', 'Por cobrar', 'Categorías', 'Ajustes', 'Deudas', 'Presupuesto', 'Listas'];
+var PULL_TABLES = ['Movimientos', 'Facturas', 'Recurrentes', 'Por cobrar', 'Categorías', 'Ajustes', 'Deudas', 'Presupuesto', 'Listas', 'Reglas'];
+var REGLAS_HEADERS = ['Contiene', 'Categoría', 'Subcategoría', 'Tipo', 'Activa'];
 
 // ---------- Entrada web ----------
 
@@ -84,7 +87,10 @@ function checkToken(token) {
 
 function pullPayload() {
   var tables = {};
-  PULL_TABLES.forEach(function (name) { tables[name] = readTable(name).rows; });
+  PULL_TABLES.forEach(function (name) {
+    if (TABLES[name].optional && !ss().getSheetByName(name)) { tables[name] = []; return; }
+    tables[name] = readTable(name).rows;
+  });
   return { ok: true, version: getVersion(), tables: tables };
 }
 
@@ -162,6 +168,9 @@ function applyOps(ops, user) {
   Object.keys(byTable).forEach(function (name) {
     var cfg = TABLES[name];
     if (!cfg || cfg.readOnly) throw new Error('La pestaña «' + name + '» no se puede modificar desde la app');
+    var wanted = {};
+    byTable[name].forEach(function (op) { Object.keys(op.row || {}).forEach(function (h) { wanted[h] = true; }); });
+    ensureHeaders(name, (cfg.addable || []).filter(function (h) { return wanted[h]; }));
     var t = readTable(name);
     var where = {};
     t.rows.forEach(function (row, i) { where[keyOf(cfg, row)] = t.rowNumbers[i]; });
@@ -195,6 +204,21 @@ function applyOps(ops, user) {
     deletes.sort(function (a, b) { return b - a; }).forEach(function (n) { t.sheet.deleteRow(n); });
   });
   return touched;
+}
+
+// Agrega al final de la fila 1 las columnas que falten (por ejemplo «Pagó» en planillas anteriores).
+function ensureHeaders(name, headers) {
+  if (!headers.length) return;
+  var sh = sheetOf(name);
+  var last = sh.getLastColumn();
+  var current = sh.getRange(1, 1, 1, last).getValues()[0].map(function (h) { return String(h).trim(); });
+  headers.forEach(function (h) {
+    if (current.indexOf(h) >= 0) return;
+    last++;
+    sh.getRange(1, last).setValue(h);
+    if (last > 1) sh.getRange(1, last - 1).copyFormatToRange(sh, last, last, 1, 1);
+    current.push(h);
+  });
 }
 
 function appendRow(t, cfg) {
@@ -414,6 +438,7 @@ function onOpen() {
     .addItem('Cambiar la dirección de la app web', 'cambiarDireccion')
     .addSeparator()
     .addItem('Crear facturas y actualizar calendario ahora', 'tareaPeriodica')
+    .addItem('Enviar cierre preliminar de prueba', 'probarMailCierre')
     .addToUi();
 }
 
@@ -434,10 +459,16 @@ function instalar() {
     });
   });
   corregirTasaArs();
+  ensureHeaders('Movimientos', ['Pagó']);
+  crearReglas();
+  asegurarAjuste('Correos del resumen', Session.getEffectiveUser().getEmail(),
+    'Separados por coma. Reciben el cierre preliminar (' + DIAS_ANTES_CIERRE + ' días antes de fin de mes) y el resumen (día 1).');
   ScriptApp.getProjectTriggers().forEach(function (tr) {
-    if (tr.getHandlerFunction() === 'tareaPeriodica') ScriptApp.deleteTrigger(tr);
+    var fn = tr.getHandlerFunction();
+    if (fn === 'tareaPeriodica' || fn === 'tareaDiaria') ScriptApp.deleteTrigger(tr);
   });
   ScriptApp.newTrigger('tareaPeriodica').timeBased().everyHours(1).create();
+  ScriptApp.newTrigger('tareaDiaria').timeBased().everyDays(1).atHour(8).create();
   tareaPeriodica();
   SpreadsheetApp.getUi().alert('Listo', 'Se crearon las facturas del mes, el calendario «' + calendar().getName() +
     '» y la actualización automática cada hora.\n\nAhora usá «2. Conectar la app».', SpreadsheetApp.getUi().ButtonSet.OK);
@@ -489,4 +520,228 @@ function conectarApp() {
 function cambiarDireccion() {
   PropertiesService.getScriptProperties().deleteProperty('webAppUrl');
   conectarApp();
+}
+
+// ---------- Mails de cierre ----------
+// Cierre preliminar DIAS_ANTES_CIERRE días antes de fin de mes (para corregir) y resumen final el día 1.
+
+var DIAS_ANTES_CIERRE = 4;
+var MESES = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
+
+function tareaDiaria() {
+  var hoy = todayIso();
+  var key = monthKeyOf(hoy);
+  var dia = Number(hoy.slice(8, 10));
+  var ultimo = Number(dateInMonth(key, 31).slice(8, 10));
+  var props = PropertiesService.getScriptProperties();
+  if (dia === ultimo - DIAS_ANTES_CIERRE && !props.getProperty('mail-pre-' + key)) {
+    enviarCierrePreliminar(key);
+    props.setProperty('mail-pre-' + key, hoy);
+  }
+  var anterior = addMonthsKey(key, -1);
+  if (dia === 1 && !props.getProperty('mail-res-' + anterior)) {
+    enviarResumenMensual(anterior);
+    props.setProperty('mail-res-' + anterior, hoy);
+  }
+}
+
+function fechaCorta(iso) { return iso ? Number(String(iso).slice(8, 10)) + ' ' + MESES[Number(String(iso).slice(5, 7)) - 1].slice(0, 3) : ''; }
+function nombreMes(key) { return MESES[Number(key.slice(5, 7)) - 1] + ' ' + key.slice(0, 4); }
+function etiqueta(code) { return String(code || '').replace(/_(.)/g, function (m, c) { return ' ' + c.toLowerCase(); }); }
+
+function tasas() {
+  var r = { COP: 1, USD: 3194.44, ARS: 2.13845 };
+  readTable('Ajustes').rows.forEach(function (a) {
+    var v = Number(a['Valor']);
+    if (a['Ajuste'] === 'Tasa USD (COP por 1 USD)' && v > 0) r.USD = v;
+    if (a['Ajuste'] === 'Tasa ARS (COP por 1 ARS)' && v > 0) r.ARS = v;
+  });
+  return r;
+}
+
+function aCop(item, campo, rates) { return (Number(item[campo]) || 0) * (rates[item['Moneda'] || 'COP'] || 1); }
+function esIngreso(m) { return m['Tipo'] === 'Ingreso' || m['Categoría'] === 'Ingresos'; }
+
+function destinatarios() {
+  var v = String(settingValue('Correos del resumen') || '');
+  var list = v.split(/[,;\s]+/).filter(function (x) { return /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(x); });
+  if (!list.length) list = [Session.getEffectiveUser().getEmail()];
+  return list;
+}
+
+// Números del mes: ingresos, gastos (movimientos + facturas pagadas), presupuesto por categoría y por persona.
+function datosMes(key) {
+  var rates = tasas();
+  var movs = readTable('Movimientos').rows;
+  var bills = readTable('Facturas').rows;
+  var presu = readTable('Presupuesto').rows;
+  var enMes = function (iso) { return String(iso || '').slice(0, 7) === key; };
+  var d = { key: key, ingresos: 0, gastos: 0, cats: {}, personas: {}, pendientes: [], movs: [], rates: rates };
+  var cat = function (c) { return (d.cats[c] = d.cats[c] || { gastado: 0, limite: 0 }); };
+  movs.forEach(function (m) {
+    if (!enMes(m['Fecha'])) return;
+    var v = aCop(m, 'Importe', rates);
+    if (esIngreso(m)) { d.ingresos += v; return; }
+    d.gastos += v;
+    d.movs.push(m);
+    cat(m['Categoría'] || 'Sin categoría').gastado += v;
+    var p = m['Pagó'] || m['Cargado por'] || 'Sin asignar';
+    d.personas[p] = (d.personas[p] || 0) + v;
+  });
+  bills.forEach(function (b) {
+    if (!enMes(b['Vence'])) return;
+    var v = aCop(b, 'Importe', rates);
+    if (b['Pagada'] === 'Sí') { d.gastos += v; cat(b['Categoría']).gastado += v; } else d.pendientes.push(b);
+  });
+  var refKey = presu.some(function (r) { return enMes(r['Mes']); }) ? key : addMonthsKey(key, -12);
+  presu.forEach(function (r) {
+    if (String(r['Mes'] || '').slice(0, 7) !== refKey || r['Categoría'] === 'Ingresos') return;
+    cat(r['Categoría']).limite += aCop(r, 'Importe', rates);
+  });
+  d.pendientes.sort(function (a, b) { return String(a['Vence']).localeCompare(String(b['Vence'])); });
+  return d;
+}
+
+// Movimientos del mes que conviene revisar antes del cierre.
+function paraRevisar(d) {
+  var out = [];
+  var vistos = {};
+  var historico = {};
+  var desde = addMonthsKey(d.key, -6);
+  readTable('Movimientos').rows.forEach(function (m) {
+    var k = String(m['Fecha'] || '').slice(0, 7);
+    if (k < desde || k >= d.key || esIngreso(m)) return;
+    (historico[m['Categoría']] = historico[m['Categoría']] || []).push(aCop(m, 'Importe', d.rates));
+  });
+  var mediana = function (xs) {
+    var s = xs.slice().sort(function (a, b) { return a - b; });
+    var n = s.length;
+    return n % 2 ? s[(n - 1) / 2] : (s[n / 2 - 1] + s[n / 2]) / 2;
+  };
+  d.movs.forEach(function (m) {
+    var motivos = [];
+    if (!m['Categoría']) motivos.push('sin categoría');
+    else if (!m['Subcategoría']) motivos.push('sin subcategoría');
+    var firma = [m['Fecha'], m['Importe'], m['Moneda'], m['Categoría']].join('|');
+    if (vistos[firma]) motivos.push('posible duplicado');
+    vistos[firma] = true;
+    var h = historico[m['Categoría']] || [];
+    var v = aCop(m, 'Importe', d.rates);
+    if (h.length >= 5 && v >= 200000 && v > 3 * mediana(h)) motivos.push('monto inusual para la categoría');
+    if (motivos.length) out.push({ m: m, motivos: motivos });
+  });
+  return out;
+}
+
+// ---------- HTML de los mails ----------
+function h(s) { return String(s === undefined || s === null ? '' : s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
+var CSS_TD = 'padding:6px 10px;border-bottom:1px solid #EFEBE4;font-size:14px;';
+function tabla(cols, filas) {
+  if (!filas.length) return '<p style="color:#6F6B63;font-size:14px">Nada para mostrar.</p>';
+  return '<table cellspacing="0" style="border-collapse:collapse;width:100%;max-width:640px">' +
+    '<tr>' + cols.map(function (c, i) { return '<th style="' + CSS_TD + 'text-align:' + (i ? 'right' : 'left') + ';color:#6F6B63;font-size:12px">' + h(c) + '</th>'; }).join('') + '</tr>' +
+    filas.map(function (f) { return '<tr>' + f.map(function (c, i) { return '<td style="' + CSS_TD + 'text-align:' + (i ? 'right' : 'left') + '">' + c + '</td>'; }).join('') + '</tr>'; }).join('') +
+    '</table>';
+}
+function bloque(titulo, html) { return '<h3 style="font-size:16px;margin:24px 0 8px">' + h(titulo) + '</h3>' + html; }
+function cifras(items) {
+  return '<table cellspacing="0" style="margin:8px 0"><tr>' + items.map(function (it) {
+    return '<td style="padding:10px 20px 10px 0"><div style="font-size:12px;color:#6F6B63">' + h(it[0]) + '</div><div style="font-size:20px;font-weight:800">' + h(it[1]) + '</div></td>';
+  }).join('') + '</tr></table>';
+}
+function marco(titulo, cuerpo) {
+  return '<div style="font-family:Arial,sans-serif;color:#1C1B19;max-width:680px">' +
+    '<h2 style="font-size:22px;margin:0 0 4px">' + h(titulo) + '</h2>' + cuerpo +
+    '<p style="margin-top:28px;font-size:13px"><a href="' + APP_URL + '">Abrir Cuentas Casa</a> · <a href="' + ss().getUrl() + '">Abrir la planilla</a></p></div>';
+}
+function pesos(v) { return money(v, 'COP'); }
+function filaCategorias(d, soloAlertas) {
+  return Object.keys(d.cats).map(function (c) {
+    var x = d.cats[c];
+    var pct = x.limite ? Math.round((x.gastado / x.limite) * 100) : null;
+    return { c: c, x: x, pct: pct };
+  }).filter(function (r) { return r.x.gastado > 0 && (!soloAlertas || (r.pct !== null && r.pct >= umbral())); })
+    .sort(function (a, b) { return b.x.gastado - a.x.gastado; })
+    .map(function (r) {
+      var marca = r.pct === null ? 'sin límite' : (r.pct >= 100 ? '<b style="color:#B3261E">▲ ' + r.pct + '%</b>' : r.pct + '%');
+      return [h(etiqueta(r.c)), pesos(r.x.gastado), r.x.limite ? pesos(r.x.limite) : '—', marca];
+    });
+}
+function umbral() {
+  var v = Number(settingValue('Umbral de aviso de presupuesto'));
+  return v > 0 ? Math.round(v <= 1 ? v * 100 : v) : 80;
+}
+
+function htmlCierrePreliminar(key) {
+  var d = datosMes(key);
+  var revisar = paraRevisar(d);
+  var sig = addMonthsKey(key, 1);
+  var proximos = readTable('Facturas').rows.filter(function (b) {
+    return b['Pagada'] !== 'Sí' && String(b['Vence']).slice(0, 7) === sig && Number(String(b['Vence']).slice(8, 10)) <= 7;
+  }).sort(function (a, b) { return String(a['Vence']).localeCompare(String(b['Vence'])); });
+  var cuerpo = '<p style="color:#6F6B63;margin:0">Faltan ' + DIAS_ANTES_CIERRE + ' días para cerrar el mes. Revisá estos puntos y corregí lo que haga falta en la app o en la planilla.</p>' +
+    cifras([['Ingresos', pesos(d.ingresos)], ['Gastos', pesos(d.gastos)], ['Facturas sin pagar', pesos(d.pendientes.reduce(function (s, b) { return s + aCop(b, 'Importe', d.rates); }, 0))]]) +
+    bloque('Facturas del mes sin marcar como pagadas', tabla(['Factura', 'Vence', 'Importe'],
+      d.pendientes.map(function (b) { return [h(b['Nombre']), h(fechaCorta(b['Vence'])), h(money(b['Importe'], b['Moneda']))]; }))) +
+    bloque('Movimientos para revisar', tabla(['Movimiento', 'Fecha', 'Importe', 'Motivo'],
+      revisar.map(function (r) { return [h(r.m['Comentarios'] || r.m['Subcategoría'] || etiqueta(r.m['Categoría'])), h(fechaCorta(r.m['Fecha'])), h(money(r.m['Importe'], r.m['Moneda'])), h(r.motivos.join(', '))]; }))) +
+    bloque('Categorías excedidas o cerca del límite (' + umbral() + '% o más)', tabla(['Categoría', 'Gastado', 'Presupuesto', 'Usado'], filaCategorias(d, true))) +
+    bloque('Vence en los primeros días de ' + nombreMes(sig), tabla(['Factura', 'Vence', 'Importe'],
+      proximos.map(function (b) { return [h(b['Nombre']), h(fechaCorta(b['Vence'])), h(money(b['Importe'], b['Moneda']))]; })));
+  return { asunto: 'Cuentas Casa · Cierre preliminar de ' + nombreMes(key), html: marco('Cierre preliminar de ' + nombreMes(key), cuerpo) };
+}
+
+function htmlResumenMensual(key) {
+  var d = datosMes(key);
+  var a = datosMes(addMonthsKey(key, -1));
+  var ahorro = d.ingresos - d.gastos;
+  var tasa = d.ingresos ? Math.round((ahorro / d.ingresos) * 100) + '%' : '—';
+  var vs = function (now, before, subeBien) {
+    if (!before) return '—';
+    var p = Math.round(((now - before) / Math.abs(before)) * 100);
+    var bien = p > 0 === subeBien;
+    return '<span style="color:' + (p === 0 ? '#6F6B63' : bien ? '#1B7F4B' : '#B3261E') + '">' + (p > 0 ? '▲ ' : p < 0 ? '▼ ' : '') + Math.abs(p) + '%</span>';
+  };
+  var personas = Object.keys(d.personas).sort(function (x, y) { return d.personas[y] - d.personas[x]; })
+    .map(function (p) { return [h(p), pesos(d.personas[p]), d.gastos ? Math.round((d.personas[p] / d.gastos) * 100) + '%' : '—']; });
+  var cuerpo = cifras([['Ingresos', pesos(d.ingresos)], ['Gastos', pesos(d.gastos)], ['Ahorro', pesos(ahorro)], ['Tasa de ahorro', tasa]]) +
+    bloque('Comparado con ' + nombreMes(addMonthsKey(key, -1)), tabla(['', 'Este mes', 'Mes anterior', 'Variación'], [
+      ['Ingresos', pesos(d.ingresos), pesos(a.ingresos), vs(d.ingresos, a.ingresos, true)],
+      ['Gastos', pesos(d.gastos), pesos(a.gastos), vs(d.gastos, a.gastos, false)],
+    ])) +
+    bloque('Gastos por categoría', tabla(['Categoría', 'Gastado', 'Presupuesto', 'Usado'], filaCategorias(d, false))) +
+    bloque('Gastos por persona (movimientos)', tabla(['Persona', 'Gastado', 'Del total'], personas)) +
+    bloque('Facturas que quedaron sin pagar', tabla(['Factura', 'Vence', 'Importe'],
+      d.pendientes.map(function (b) { return [h(b['Nombre']), h(fechaCorta(b['Vence'])), h(money(b['Importe'], b['Moneda']))]; })));
+  return { asunto: 'Cuentas Casa · Resumen de ' + nombreMes(key), html: marco('Resumen de ' + nombreMes(key), cuerpo) };
+}
+
+function enviar(m) {
+  var to = destinatarios();
+  MailApp.sendEmail({ to: to.join(','), subject: m.asunto, htmlBody: m.html, name: 'Cuentas Casa' });
+  return to;
+}
+function enviarCierrePreliminar(key) { return enviar(htmlCierrePreliminar(key)); }
+function enviarResumenMensual(key) { return enviar(htmlResumenMensual(key)); }
+
+function probarMailCierre() {
+  var to = enviarCierrePreliminar(monthKeyOf(todayIso()));
+  SpreadsheetApp.getUi().alert('Se envió el cierre preliminar de prueba a: ' + to.join(', '));
+}
+
+// ---------- Instalación de lo nuevo ----------
+function crearReglas() {
+  if (ss().getSheetByName('Reglas')) return;
+  var sh = ss().insertSheet('Reglas');
+  sh.getRange(1, 1, 1, REGLAS_HEADERS.length).setValues([REGLAS_HEADERS]).setFontWeight('bold').setBackground('#1C1B19').setFontColor('#FFFFFF');
+  sh.getRange(2, 1, 1, 5).setValues([['Ejemplo: éxito', 'Alimentación', 'Supermercado', 'Gasto', 'No']]);
+  sh.setFrozenRows(1);
+}
+
+function asegurarAjuste(nombre, valor, nota) {
+  var t = readTable('Ajustes');
+  if (t.rows.some(function (r) { return r['Ajuste'] === nombre; })) return;
+  var n = t.sheet.getLastRow() + 1;
+  var row = t.headers.map(function (hd) { return hd === 'Ajuste' ? nombre : hd === 'Valor' ? valor : hd === 'Fuente o nota' ? nota : ''; });
+  t.sheet.getRange(n, 1, 1, row.length).setValues([row]);
 }

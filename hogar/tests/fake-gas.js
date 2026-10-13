@@ -29,6 +29,9 @@ class FakeRange {
   setValue(v) { this.sheet.set(this.row, this.col, v); return this; }
   setNumberFormat() { return this; }
   copyFormatToRange() { return this; }
+  setFontWeight() { return this; }
+  setBackground() { return this; }
+  setFontColor() { return this; }
 }
 
 class FakeSheet {
@@ -54,6 +57,7 @@ class FakeSheet {
   deleteRow(n) { this.data.splice(n - 1, 1); }
   getRange(row, col, rows = 1, cols = 1) { return new FakeRange(this, row, col, rows, cols); }
   getDataRange() { return new FakeRange(this, 1, 1, this.getLastRow(), this.getLastColumn()); }
+  setFrozenRows() { return this; }
 }
 
 class FakeEvent {
@@ -89,6 +93,8 @@ function createGas(tables, opts = {}) {
   const props = { token: opts.token || 'secreto' };
   const calendars = [];
   const ui = { prompts: [], promptAnswer: null, dialogs: [], alerts: [] };
+  const mails = [];
+  const triggers = [];
   const now = opts.now || (() => new Date());
 
   const Utilities = {
@@ -114,6 +120,8 @@ function createGas(tables, opts = {}) {
       getActiveSpreadsheet: () => ({
         getSheetByName: (n) => sheets[n] || null,
         getSpreadsheetTimeZone: () => 'America/Bogota',
+        getUrl: () => 'https://docs.google.com/spreadsheets/d/PRUEBA/edit',
+        insertSheet: (n) => (sheets[n] = new FakeSheet(n, [])),
       }),
       getUi: () => ({
         ButtonSet: { OK: 'ok', OK_CANCEL: 'okc' }, Button: { OK: 'ok', CANCEL: 'cancel' },
@@ -142,7 +150,13 @@ function createGas(tables, opts = {}) {
       getCalendarsByName: (n) => calendars.filter((c) => c.name === n),
       createCalendar: (n) => { const c = new FakeCalendar(n); calendars.push(c); return c; },
     },
-    ScriptApp: { getProjectTriggers: () => [], deleteTrigger() {}, newTrigger: () => ({ timeBased() { return this; }, everyHours() { return this; }, create() {} }) },
+    ScriptApp: {
+      getProjectTriggers: () => triggers.map((fn) => ({ getHandlerFunction: () => fn })),
+      deleteTrigger: (tr) => { triggers.splice(triggers.indexOf(tr.getHandlerFunction()), 1); },
+      newTrigger: (fn) => ({ timeBased() { return this; }, everyHours() { return this; }, everyDays() { return this; }, atHour() { return this; }, create() { triggers.push(fn); } }),
+    },
+    Session: { getEffectiveUser: () => ({ getEmail: () => opts.owner || 'alan@example.com' }) },
+    MailApp: { sendEmail: (m) => mails.push(m) },
     Utilities,
     HtmlService: { createHtmlOutput: (html) => ({ html, setWidth() { return this; }, setHeight() { return this; } }) },
   };
@@ -151,7 +165,7 @@ function createGas(tables, opts = {}) {
   vm.runInContext(code, sandbox);
 
   return {
-    sheets, props, calendars, sandbox, ui,
+    sheets, props, calendars, sandbox, ui, mails, triggers,
     get(params) { return JSON.parse(sandbox.doGet({ parameter: params }).text); },
     post(body) { return JSON.parse(sandbox.doPost({ postData: { contents: JSON.stringify(body) } }).text); },
     run(fn) { return sandbox[fn](); },
