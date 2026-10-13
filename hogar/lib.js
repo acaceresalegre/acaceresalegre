@@ -192,8 +192,10 @@
     const bills = state.bills.filter((b) => monthKey(b.due) === key);
     const paid = bills.filter((b) => b.paid).reduce((s, b) => s + toCOP(b, rates), 0);
     const pending = bills.filter((b) => !b.paid).reduce((s, b) => s + toCOP(b, rates), 0);
+    const saved = state.movements.filter((m) => m.type === 'save' && inMonth(m)).reduce((s, m) => s + toCOP(m, rates), 0);
     const expense = variable + paid;
-    return { income, expense, pending, balance: income - expense, remaining: income - expense - pending, hasData: income + expense > 0 };
+    // Lo aportado a metas no es gasto (sigue siendo ahorro), pero ya no está disponible para gastar.
+    return { income, expense, pending, saved, balance: income - expense, remaining: income - expense - pending - saved, hasData: income + expense > 0 };
   }
 
   // Ingresos y gastos (COP) del mes por persona, solo movimientos (las facturas no tienen persona).
@@ -201,7 +203,7 @@
     const rates = state.settings.rates;
     const map = new Map();
     for (const m of state.movements) {
-      if (monthKey(m.date) !== key) continue;
+      if (monthKey(m.date) !== key || m.type === 'save') continue;
       const name = personOf(m) || 'Sin asignar';
       const r = map.get(name) || { name, income: 0, expense: 0 };
       r[m.type === 'inc' ? 'income' : 'expense'] += toCOP(m, rates);
@@ -273,7 +275,8 @@
     });
     const income = list.filter((m) => m.type === 'inc').reduce((s, m) => s + toCOP(m, rates), 0);
     const expense = list.filter((m) => m.type === 'exp').reduce((s, m) => s + toCOP(m, rates), 0);
-    return { list, income, expense, net: income - expense };
+    const saved = list.filter((m) => m.type === 'save').reduce((s, m) => s + toCOP(m, rates), 0);
+    return { list, income, expense, saved, net: income - expense };
   }
 
   // Personas de la casa: las conocidas más las que aparecen cargando o pagando movimientos.
@@ -309,6 +312,37 @@
     }
     const best = [...counts.values()].sort((a, b) => b.n - a.n || b.last.localeCompare(a.last))[0];
     return best ? { cat: best.cat, sub: best.sub, source: 'historial' } : null;
+  }
+
+  // ---------- Metas de ahorro ----------
+  // Ahorrado = ahorro inicial + aportes (movimientos de tipo Ahorro), en la moneda de la meta.
+  // Ritmo = promedio mensual aportado en los últimos 3 meses (incluido el actual).
+  function goalProgress(state, goal, today) {
+    const rates = state.settings.rates;
+    const inGoal = (v, cur) => convert(v, cur, goal.cur, rates);
+    const movs = state.movements.filter((m) => m.type === 'save' && m.goalId === goal.id);
+    const saved = (Number(goal.initial) || 0) + movs.reduce((s, m) => s + inGoal(m.amount, m.cur), 0);
+    const target = Number(goal.target) || 0;
+    const left = Math.max(0, target - saved);
+    const key = monthKey(today);
+    const from = addMonths(key, -2);
+    // Si la meta tiene aportes desde hace menos de 3 meses, se promedia solo ese tramo.
+    const first = movs.reduce((k, m) => (monthKey(m.date) < k ? monthKey(m.date) : k), key);
+    const start = first > from ? first : from;
+    const span = (Number(key.slice(0, 4)) - Number(start.slice(0, 4))) * 12 + Number(key.slice(5, 7)) - Number(start.slice(5, 7)) + 1;
+    const pace = movs.filter((m) => monthKey(m.date) >= from && monthKey(m.date) <= key)
+      .reduce((s, m) => s + inGoal(m.amount, m.cur), 0) / span;
+    const thisMonth = movs.filter((m) => monthKey(m.date) === key).reduce((s, m) => s + inGoal(m.amount, m.cur), 0);
+    const monthsLeft = goal.due ? Math.max(1, (Number(goal.due.slice(0, 4)) - Number(key.slice(0, 4))) * 12
+      + Number(goal.due.slice(5, 7)) - Number(key.slice(5, 7)) + 1) : null;
+    const needed = monthsLeft ? left / monthsLeft : null;
+    const eta = left <= 0 ? null : pace > 0 ? addMonths(key, Math.ceil(left / pace) - 1) : null;
+    let status = 'nodate';
+    if (left <= 0) status = 'done';
+    else if (goal.due && goal.due < today) status = 'late';
+    else if (goal.due) status = pace >= needed * 0.95 ? 'ok' : 'behind';
+    return { saved, target, left, pct: target ? Math.min(100, (saved / target) * 100) : 0, pace, thisMonth, monthsLeft, needed, eta, status,
+      movs: movs.slice().sort((a, b) => b.date.localeCompare(a.date)) };
   }
 
   // ---------- Alertas ----------
@@ -373,11 +407,13 @@
       ...events, 'END:VCALENDAR'].join('\r\n') + '\r\n';
   }
 
+  const TYPE_LABEL = { exp: 'Gasto', inc: 'Ingreso', save: 'Ahorro' };
+
   function toCSV(state) {
     const q = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
     const rows = [['Fecha', 'Tipo', 'Categoría', 'Subcategoría', 'Descripción', 'Moneda', 'Importe', 'Medio de pago', 'Persona']];
     for (const m of [...state.movements].sort((a, b) => a.date.localeCompare(b.date))) {
-      rows.push([m.date, m.type === 'inc' ? 'Ingreso' : 'Gasto', m.cat, m.sub, m.note, m.cur, m.amount, m.method, personOf(m)]);
+      rows.push([m.date, TYPE_LABEL[m.type] || 'Gasto', m.cat, m.sub, m.note, m.cur, m.amount, m.method, personOf(m)]);
     }
     for (const b of state.bills.filter((x) => x.paid).sort((a, z) => a.due.localeCompare(z.due))) {
       rows.push([b.due, 'Factura', b.cat, b.sub, b.name, b.cur, b.amount, b.method, '']);
@@ -521,6 +557,7 @@
       methods: ['Efectivo', 'Transferencia', 'Tarjeta Débito', 'Tarjeta Crédito', 'Billetera virtual'],
       people: ['Alan', 'Karo'],
       rules: [],
+      goals: [],
       loans: [],
       recurring: [],
       bills: [],
@@ -586,7 +623,7 @@
     const base = baseState(today);
     const s = { ...base, ...raw, settings: { ...base.settings, ...raw.settings } };
     s.settings.rates = { ...base.settings.rates, ...(raw.settings.rates || {}) };
-    for (const k of ['categories', 'incomeCats', 'methods', 'people', 'rules', 'loans', 'recurring', 'bills', 'movements', 'receivables']) {
+    for (const k of ['categories', 'incomeCats', 'methods', 'people', 'rules', 'goals', 'loans', 'recurring', 'bills', 'movements', 'receivables']) {
       if (!Array.isArray(s[k])) s[k] = base[k];
     }
     if (!s.categories.length) s.categories = base.categories;
@@ -610,6 +647,7 @@
   const catLabel = (code) => String(code).replace(/_(.)/g, (m, c) => ' ' + c.toLowerCase());
 
   const INCOME_GROUP = 'Ingresos';
+  const SAVE_TYPE = 'Ahorro'; // aportes a metas: Tipo y Categoría «Ahorro», Subcategoría = nombre de la meta
   const SETTING_KEYS = { USD: 'Tasa USD (COP por 1 USD)', ARS: 'Tasa ARS (COP por 1 ARS)', threshold: 'Umbral de aviso de presupuesto' };
 
   function parseAlerts(v) {
@@ -676,7 +714,16 @@
     const methods = t('Listas').map((r) => str(r['Medio de pago'])).filter(Boolean);
     if (methods.length) s.methods = methods;
 
+    s.goals = t('Metas').filter((r) => r['ID'] && str(r['Activa']) !== 'No').map((r) => ({
+      id: str(r['ID']), name: str(r['Nombre']), target: num(r['Monto objetivo']), cur: str(r['Moneda']) || 'COP',
+      due: str(r['Fecha objetivo']), initial: num(r['Ahorro inicial']), note: str(r['Comentarios']),
+    }));
     s.movements = t('Movimientos').filter((r) => r['ID'] && r['Fecha']).map((r) => {
+      if (str(r['Tipo']) === SAVE_TYPE) {
+        return { id: str(r['ID']), date: str(r['Fecha']), type: 'save', goalId: str(r['Meta ID']), cat: str(r['Subcategoría']), sub: '',
+          note: str(r['Comentarios']), amount: num(r['Importe']), cur: str(r['Moneda']) || 'COP', method: str(r['Medio de pago']),
+          by: str(r['Cargado por']), paidBy: str(r['Pagó']) };
+      }
       const inc = str(r['Tipo']) === 'Ingreso' || str(r['Categoría']) === INCOME_GROUP;
       return {
         id: str(r['ID']), date: str(r['Fecha']), type: inc ? 'inc' : 'exp',
@@ -718,13 +765,23 @@
   // Filas que la app puede escribir, por pestaña (solo las columnas que la app conoce).
   function stateToRows(s) {
     const code = (labelName) => (s.catCodes && s.catCodes[labelName]) || labelName;
+    const goalName = (id) => ((s.goals || []).find((g) => g.id === id) || {}).name;
     const alerts = (a) => (a && a.length ? a : [3, 0]).join(',');
     return {
-      'Movimientos': s.movements.map((m) => ({
-        'ID': m.id, 'Fecha': m.date, 'Tipo': m.type === 'inc' ? 'Ingreso' : 'Gasto',
-        'Categoría': m.type === 'inc' ? INCOME_GROUP : code(m.cat), 'Subcategoría': m.type === 'inc' ? m.cat : (m.sub || ''),
-        'Moneda': m.cur, 'Importe': m.amount, 'Medio de pago': m.method || '', 'Comentarios': m.note || '',
-        'Pagó': m.paidBy || '',
+      'Movimientos': s.movements.map((m) => {
+        const row = {
+          'ID': m.id, 'Fecha': m.date, 'Tipo': TYPE_LABEL[m.type] || 'Gasto',
+          'Categoría': m.type === 'inc' ? INCOME_GROUP : m.type === 'save' ? SAVE_TYPE : code(m.cat),
+          'Subcategoría': m.type === 'exp' ? (m.sub || '') : m.type === 'save' ? goalName(m.goalId) || m.cat : m.cat,
+          'Moneda': m.cur, 'Importe': m.amount, 'Medio de pago': m.method || '', 'Comentarios': m.note || '',
+          'Pagó': m.paidBy || '',
+        };
+        if (m.type === 'save') row['Meta ID'] = m.goalId || '';
+        return row;
+      }),
+      'Metas': (s.goals || []).map((g) => ({
+        'ID': g.id, 'Nombre': g.name, 'Monto objetivo': g.target, 'Moneda': g.cur, 'Fecha objetivo': g.due || '',
+        'Ahorro inicial': g.initial || 0, 'Activa': 'Sí', 'Comentarios': g.note || '',
       })),
       'Facturas': s.bills.map((b) => ({
         'ID': b.id, 'Nombre': b.name, 'Categoría': code(b.cat), 'Subcategoría': b.sub || '', 'Moneda': b.cur, 'Importe': b.amount,
@@ -796,7 +853,7 @@
     CURRENCIES, convert, formatMoney, formatShort, cleanDigits, groupDigits, toCOP,
     ensureRecurring, dueInfo, isUrgent, groupBills, dayDot, calendarCells,
     elapsedDays, categoryStats, monthSummary, buildAlerts, monthSeries, dailySpend, filterMovements,
-    peopleOf, personOf, suggestCategory, spendByPerson,
+    peopleOf, personOf, suggestCategory, spendByPerson, goalProgress,
     toICS, toCSV, parseMovementRows, parseNumber, cellToISO, parseReceipt,
     baseState, sampleState, normalizeState, clearSamples,
   };
