@@ -40,7 +40,9 @@ Igual nadie puede leer ni escribir sin el código de acceso secreto que se crea 
 
 ## 4. Conectar los celulares
 
-1. **Cuentas Casa → 2. Conectar la app**. Aparecen dos enlaces: uno para Alan y otro para Karo.
+1. **Cuentas Casa → 2. Conectar la app**. La primera vez pide la dirección de la aplicación web: pegá la del paso 2
+   (también está en Apps Script → **Implementar → Gestionar implementaciones**). Después aparecen dos enlaces,
+   uno para Alan y otro para Karo, y debajo la dirección y el código para cargarlos a mano.
 2. Mandale a cada uno su enlace (por WhatsApp o mail) y abrilo **en el celular**, en el mismo navegador donde usan la app.
 3. La app pregunta si reemplaza los datos del celular por los de la planilla: **Aceptar**.
 
@@ -57,6 +59,9 @@ Los enlaces incluyen el código de acceso: no los compartas con nadie más.
 ## Si algo falla
 
 - **La app dice «Código de acceso inválido»**: usá de nuevo «2. Conectar la app» y abrí el enlace nuevo.
+- **La app dice «La planilla no respondió»**: la dirección guardada no es la de la implementación publicada.
+  Usá **Cuentas Casa → Cambiar la dirección de la app web** y pegá la de **Gestionar implementaciones**.
+  También podés cargar la dirección y el código a mano en la app: **Ajustes → Planilla de Google**.
 - **Cambiaste el programa** (por ejemplo, una versión nueva de `Codigo.gs`): pegalo, guardá y en
   **Implementar → Gestionar implementaciones → editar (lápiz) → Versión: Nueva versión → Implementar**.
   La URL no cambia.
