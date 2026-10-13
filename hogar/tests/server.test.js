@@ -170,3 +170,76 @@ test('conectar la app pide la dirección publicada una vez y la usa en los enlac
   assert.equal(gas.ui.prompts.length, 2, 'la segunda vez usa la dirección guardada');
   assert.equal(gas.ui.dialogs.length, 2);
 });
+
+test('agrega la columna Pagó la primera vez que la app la manda', () => {
+  const gas = createGas(planilla(), { now: NOW });
+  gas.post({ token: 'secreto', user: 'Alan', ops: [
+    { table: 'Movimientos', op: 'upsert', row: { ID: 'x2', Fecha: '2026-10-11', Tipo: 'Gasto', 'Categoría': 'Ocio', Moneda: 'COP', Importe: 1000, 'Pagó': 'Karo' } },
+  ] });
+  const head = gas.sheets['Movimientos'].data[0];
+  assert.equal(head[head.length - 1], 'Pagó');
+  const fila = rowsOf(gas, 'Movimientos').find((r) => r[0] === 'x2');
+  assert.equal(fila[head.indexOf('Pagó')], 'Karo');
+  assert.equal(fila[head.indexOf('Cargado por')], 'Alan');
+  const pulled = gas.get({ token: 'secreto', action: 'pull' }).tables['Movimientos'].find((m) => m.ID === 'x2');
+  assert.equal(pulled['Pagó'], 'Karo');
+});
+
+test('la pestaña Reglas es opcional e instalar la crea', () => {
+  const gas = createGas(planilla(), { now: NOW });
+  assert.deepEqual(gas.get({ token: 'secreto', action: 'pull' }).tables['Reglas'], []);
+  gas.run('instalar');
+  assert.deepEqual(gas.sheets['Reglas'].data[0], ['Contiene', 'Categoría', 'Subcategoría', 'Tipo', 'Activa']);
+  assert.ok(gas.sheets['Movimientos'].data[0].includes('Pagó'));
+  const correos = rowsOf(gas, 'Ajustes').find((r) => r[0] === 'Correos del resumen');
+  assert.equal(correos[1], 'alan@example.com');
+  assert.deepEqual(gas.triggers.sort(), ['tareaDiaria', 'tareaPeriodica']);
+  gas.run('instalar');
+  assert.equal(gas.triggers.length, 2, 'reinstalar no duplica los activadores');
+  assert.equal(rowsOf(gas, 'Ajustes').filter((r) => r[0] === 'Correos del resumen').length, 1);
+});
+
+function conMails(fecha) {
+  const p = planilla();
+  p['Ajustes'].push(['Correos del resumen', 'alan@example.com, karo@example.com', '']);
+  p['Movimientos'][0].push('Pagó');
+  p['Movimientos'].push(
+    ['M0003', D('2026-10-05'), 'Gasto', 'Alimentación', 'Supermercado', 'COP', 250000, 'Efectivo', '', '', 'Alan', '', 'Karo'],
+    ['M0004', D('2026-10-03'), 'Gasto', 'Alimentación', 'Supermercado', 'COP', 250000, 'Efectivo', '', '', 'Alan', ''],
+    ['M0005', D('2026-10-06'), 'Gasto', 'Ocio', '', 'COP', 40000, 'Efectivo', '', '', 'Karo', ''],
+  );
+  let now = D(fecha);
+  const gas = createGas(p, { now: () => now });
+  gas.setNow = (s) => { now = D(s); };
+  return gas;
+}
+
+test('mail de cierre preliminar 4 días antes de fin de mes, una sola vez', () => {
+  const gas = conMails('2026-10-26');
+  gas.run('tareaDiaria');
+  assert.equal(gas.mails.length, 0);
+  gas.setNow('2026-10-27');
+  gas.run('tareaDiaria');
+  gas.run('tareaDiaria');
+  assert.equal(gas.mails.length, 1);
+  const m = gas.mails[0];
+  assert.equal(m.to, 'alan@example.com,karo@example.com');
+  assert.equal(m.subject, 'Cuentas Casa · Cierre preliminar de octubre 2026');
+  assert.match(m.htmlBody, /Hipoteca N°1/, 'factura sin pagar');
+  assert.match(m.htmlBody, /posible duplicado/);
+  assert.match(m.htmlBody, /sin subcategoría/);
+});
+
+test('resumen del mes anterior el día 1 con gastos por persona', () => {
+  const gas = conMails('2026-11-01');
+  gas.run('tareaDiaria');
+  gas.run('tareaDiaria');
+  assert.equal(gas.mails.length, 1);
+  const m = gas.mails[0];
+  assert.equal(m.subject, 'Cuentas Casa · Resumen de octubre 2026');
+  // Gastos: 250.000 + 250.000 + 250.000 + 40.000 (la hipoteca no está pagada).
+  assert.match(m.htmlBody, /\$ 790\.000/);
+  assert.match(m.htmlBody, /Karo<\/td><td[^>]*>\$ 290\.000/);
+  assert.match(m.htmlBody, /Alan<\/td><td[^>]*>\$ 250\.000/);
+  assert.match(m.htmlBody, /Sin asignar<\/td><td[^>]*>\$ 250\.000/);
+});

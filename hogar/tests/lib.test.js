@@ -284,3 +284,57 @@ test('filterMovements filtra por período, tipo, búsqueda y ordena', () => {
   assert.deepEqual(L.filterMovements(s, { period: 'all', method: 'Efectivo' }, TODAY).list.map((m) => m.id), ['b', 'd']);
   assert.deepEqual(L.filterMovements(s, { period: 'month', month: '2026-09' }, TODAY).list.map((m) => m.id), ['d']);
 });
+
+// ---------- Personas y reglas ----------
+const conPersonas = () => ({
+  ...TABLES,
+  'Movimientos': [
+    ...TABLES['Movimientos'],
+    { ID: 'M3', Fecha: '2026-10-05', Tipo: 'Gasto', 'Categoría': 'Gastos_Fijos', 'Subcategoría': 'Luz', Moneda: 'COP', Importe: 50000, Comentarios: 'Recarga celular', 'Cargado por': 'Alan', 'Pagó': 'Karo' },
+    { ID: 'M4', Fecha: '2026-10-06', Tipo: 'Gasto', 'Categoría': 'Gastos_Fijos', 'Subcategoría': 'Celular', Moneda: 'COP', Importe: 32000, Comentarios: 'Recarga celular', 'Cargado por': 'Alan' },
+    { ID: 'M5', Fecha: '2026-10-07', Tipo: 'Gasto', 'Categoría': 'Gastos_Fijos', 'Subcategoría': 'Celular', Moneda: 'COP', Importe: 32000, Comentarios: 'recarga  Celular' },
+  ],
+  'Reglas': [
+    { Contiene: 'EPM', 'Categoría': 'Gastos_Fijos', 'Subcategoría': 'Luz', Tipo: 'Gasto', Activa: 'Sí' },
+    { Contiene: 'EPM agua', 'Categoría': 'Gastos_Fijos', 'Subcategoría': 'Celular', Tipo: 'Gasto' },
+    { Contiene: 'éxito', 'Categoría': 'Gastos_Fijos', 'Subcategoría': 'Luz', Tipo: 'Gasto', Activa: 'No' },
+    { Contiene: 'nómina', 'Categoría': 'Ingresos', 'Subcategoría': 'Sueldo Alan', Tipo: 'Ingreso' },
+    { Contiene: 'super', 'Categoría': 'No_existe', Tipo: 'Gasto' },
+  ],
+});
+
+test('quién cargó y quién pagó cada movimiento', () => {
+  const s = L.sheetToState(conPersonas(), null, TODAY);
+  const m3 = s.movements.find((m) => m.id === 'M3');
+  assert.deepEqual([m3.by, m3.paidBy, L.personOf(m3)], ['Alan', 'Karo', 'Karo']);
+  assert.equal(L.personOf(s.movements.find((m) => m.id === 'M4')), 'Alan');
+  assert.deepEqual(L.peopleOf(s), ['Alan', 'Karo']);
+  assert.deepEqual(L.spendByPerson(s, '2026-10').map((r) => [r.name, r.income, r.expense]), [
+    ['Karo', 0, 50000], ['Alan', 0, 32000], ['Sin asignar', 7600000, 187940 + 32000]]);
+  const f = (person) => L.filterMovements(s, { period: 'month', month: '2026-10', person }, TODAY).list.map((m) => m.id).sort();
+  assert.deepEqual(f('Karo'), ['M3']);
+  assert.deepEqual(f('-'), ['M1', 'M2', 'M5']);
+  const row = L.stateToRows(s)['Movimientos'].find((r) => r.ID === 'M3');
+  assert.equal(row['Pagó'], 'Karo');
+  assert.equal(row['Cargado por'], undefined, 'Cargado por lo completa la planilla');
+});
+
+test('una columna nueva no hace reenviar todas las filas', () => {
+  const s = L.sheetToState(TABLES, null, TODAY);
+  const viejo = L.stateToRows(s);
+  viejo['Movimientos'].forEach((r) => delete r['Pagó']);
+  assert.deepEqual(L.diffRows(viejo, L.stateToRows(s)), []);
+  s.movements[1].paidBy = 'Alan';
+  assert.deepEqual(L.diffRows(viejo, L.stateToRows(s)).map((o) => [o.row.ID, o.row['Pagó']]), [['M2', 'Alan']]);
+});
+
+test('sugerencia de categoría: reglas primero, después el historial', () => {
+  const s = L.sheetToState(conPersonas(), null, TODAY);
+  assert.deepEqual(s.rules.map((r) => r.text), ['EPM', 'EPM agua', 'nómina', 'super'], 'las reglas inactivas no se cargan');
+  assert.deepEqual(L.suggestCategory(s, 'Factura epm octubre', 'exp'), { cat: 'Gastos fijos', sub: 'Luz', source: 'regla', match: 'EPM' });
+  assert.equal(L.suggestCategory(s, 'EPM Agua', 'exp').sub, 'Celular', 'gana la coincidencia más larga');
+  assert.deepEqual(L.suggestCategory(s, 'Nomina octubre', 'inc'), { cat: 'Sueldo Alan', sub: '', source: 'regla', match: 'nómina' });
+  assert.equal(L.suggestCategory(s, 'supermercado', 'exp'), null, 'una regla con categoría inexistente se ignora');
+  assert.deepEqual(L.suggestCategory(s, 'Recarga celular', 'exp'), { cat: 'Gastos fijos', sub: 'Celular', source: 'historial' });
+  assert.equal(L.suggestCategory(s, 're', 'exp'), null);
+});

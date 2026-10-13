@@ -42,7 +42,7 @@
     budMode: 'month',
     yearSel: null,
     dashMonth: null, // mes del dashboard (null = mes actual)
-    mov: { q: '', period: 'month', month: null, type: 'all', cat: '', method: '', sort: 'date', dir: 'desc', limit: 100 },
+    mov: { q: '', period: 'month', month: null, type: 'all', cat: '', method: '', person: '', sort: 'date', dir: 'desc', limit: 100 },
     sheet: null, // { render, mount }
   };
 
@@ -228,7 +228,7 @@
   function movRow(m) {
     const title = m.note || m.sub || m.cat;
     const when = L.monthKey(m.date) === curMonth ? `día ${L.dayOf(m.date)}` : dateTxt(m.date);
-    const sub = [m.cat, m.sub, when].filter(Boolean).join(' · ');
+    const sub = [m.cat, m.sub, when, L.personOf(m)].filter(Boolean).join(' · ');
     return `<button class="mov" data-act="mov" data-id="${m.id}">
       <span class="grow"><b>${esc(title)}</b><small>${esc(sub)}</small></span>
       <span class="amt ${m.type === 'inc' ? 'inc' : ''}">${m.type === 'inc' ? '+' : ''}${esc(shown(m))}</span>
@@ -606,6 +606,10 @@
         </section>
         <section class="span-5 stack">
           <div class="card r20">
+            <div class="sec-head"><h2>Gastos por persona</h2></div>
+            ${personCard(key)}
+          </div>
+          <div class="card r20">
             <div class="sec-head"><h2>Próximos vencimientos</h2><button class="link" data-act="tab" data-v="vencimientos">Ver todos</button></div>
             <div class="stack">${upcoming.length ? upcoming.map(billRow).join('') : '<div class="empty">No hay facturas pendientes.</div>'}</div>
           </div>
@@ -619,6 +623,17 @@
           ${movTable(movs, false)}
         </section>
       </div>`;
+  }
+
+  // Gastos del mes (movimientos) según quién pagó o, si no se indicó, quién los cargó.
+  function personCard(key) {
+    const rows = L.spendByPerson(state, key).filter((r) => r.expense > 0);
+    if (!rows.length) return '<div class="empty">Sin gastos cargados en el mes.</div>';
+    const total = rows.reduce((s, r) => s + r.expense, 0);
+    return `<div class="stack">${rows.map((r) => `<button class="person-row" data-act="mov-person" data-v="${esc(r.name === 'Sin asignar' ? '-' : r.name)}" data-month="${key}">
+        <span class="kv"><span>${esc(r.name)}</span><b class="num">${esc(money(r.expense))} <small>${pctTxt((r.expense / total) * 100)}</small></b></span>
+        ${bar((r.expense / total) * 100, 'exp')}</button>`).join('')}</div>
+      <p class="hint" style="margin-top:10px">Cuenta quién pagó; si no se indicó, quién lo cargó. Las facturas no se reparten.</p>`;
   }
 
   function trendTable(key) {
@@ -667,12 +682,13 @@
       return `<th class="${cls}"><button data-act="mov-sort" data-v="${sortKey}">${label}${arrow}</button></th>`;
     };
     return `<div class="tbl-wrap"><table class="tbl">
-      <thead><tr>${th('Fecha', 'date')}${th('Detalle')}${th('Categoría')}${th('Medio de pago')}${th('Importe', 'amount', 'n')}${th(`En ${dc()}`, null, 'n')}</tr></thead>
+      <thead><tr>${th('Fecha', 'date')}${th('Detalle')}${th('Categoría')}${th('Medio de pago')}${th('Persona')}${th('Importe', 'amount', 'n')}${th(`En ${dc()}`, null, 'n')}</tr></thead>
       <tbody>${list.map((m) => `<tr data-act="mov" data-id="${esc(m.id)}">
         <td>${esc(dateTxt(m.date))}</td>
         <td>${esc(m.note || m.sub || m.cat)}</td>
         <td>${esc(m.cat)}${m.sub ? `<br><small>${esc(m.sub)}</small>` : ''}</td>
         <td>${esc(m.method || '')}</td>
+        <td>${esc(L.personOf(m))}${m.paidBy && m.by && m.by !== m.paidBy ? `<br><small>cargó ${esc(m.by)}</small>` : ''}</td>
         <td class="n ${m.type === 'inc' ? 'inc' : ''}">${m.type === 'inc' ? '+' : ''}${esc(orig(m))}</td>
         <td class="n">${esc(money(cop(m)))}</td>
       </tr>`).join('')}</tbody></table></div>`;
@@ -691,6 +707,7 @@
         <select id="mov-type" aria-label="Tipo">${[['all', 'Gastos e ingresos'], ['exp', 'Gastos'], ['inc', 'Ingresos']].map(([v, l]) => opt(v, l, f.type)).join('')}</select>
         <select id="mov-cat" aria-label="Categoría">${opt('', 'Todas las categorías', f.cat)}${cats.map((c) => opt(c, c, f.cat)).join('')}</select>
         <select id="mov-method" aria-label="Medio de pago">${opt('', 'Todos los medios', f.method)}${state.methods.map((m) => opt(m, m, f.method)).join('')}</select>
+        <select id="mov-person" aria-label="Persona">${opt('', 'Todas las personas', f.person)}${L.peopleOf(state).map((p) => opt(p, p, f.person)).join('')}${opt('-', 'Sin asignar', f.person)}</select>
         <button class="pill" data-act="mov-csv">Exportar CSV</button>
       </div>
       <div id="mov-results">${renderMovResults()}</div>`;
@@ -877,6 +894,8 @@
           <div class="kv"><span>Fecha</span><b>${esc(cap(L.longDate(m.date)))}</b></div>
           <div class="kv"><span>Monto</span><b class="num">${esc(orig(m))}${m.cur !== dc() ? `<br><small style="color:var(--ink-2);font-weight:500">≈ ${esc(money(cop(m)))}</small>` : ''}</b></div>
           ${m.method ? `<div class="kv"><span>Medio de pago</span><b>${esc(m.method)}</b></div>` : ''}
+          ${m.paidBy ? `<div class="kv"><span>${m.type === 'inc' ? 'Lo recibió' : 'Pagó'}</span><b>${esc(m.paidBy)}</b></div>` : ''}
+          ${m.by ? `<div class="kv"><span>Cargado por</span><b>${esc(m.by)}</b></div>` : ''}
         </div>
         <button class="primary" data-act="mov-edit" data-id="${m.id}">Editar</button>
         <button class="danger-link" data-act="mov-del" data-id="${m.id}">Eliminar movimiento</button>`;
@@ -887,7 +906,7 @@
     const m = state.movements.find((x) => x.id === id);
     if (!m) return;
     openAdd(m.type, { editId: m.id, digits: String(Math.round(m.amount)), cur: m.cur, cat: m.cat, sub: m.sub || '',
-      note: m.note || '', method: m.method || state.methods[0], date: m.date });
+      note: m.note || '', method: m.method || state.methods[0], paidBy: m.paidBy || '', date: m.date });
   }
 
   // --- Agregar (gasto, ingreso o factura) ---
@@ -898,7 +917,7 @@
     return {
       mode: m, digits: '', cur: 'COP',
       cat: m === 'inc' ? state.incomeCats[0] : state.categories[0].name,
-      sub: '', note: '', method: state.methods[0], date: today, due: today,
+      sub: '', note: '', method: state.methods[0], paidBy: '', date: today, due: today,
       recurring: false, alerts: [3, 0], scanNote: null, ...extra,
     };
   }
@@ -919,11 +938,36 @@
     openSheet(renderAdd, mountAdd);
   }
 
-  function renderAdd() {
+  // Categoría y subcategoría; se redibuja sola cuando el comentario sugiere otra categoría.
+  function catBlock() {
     const f = form;
     const cats = f.mode === 'inc' ? state.incomeCats : state.categories.map((c) => c.name);
     const catObj = state.categories.find((c) => c.name === f.cat);
+    const sug = f.suggested && f.suggested.cat === f.cat && !f.catTouched ? f.suggested : null;
+    return `<span class="field-label">Categoría${sug ? ` <small class="hint">· sugerida ${sug.source === 'regla' ? `por la regla «${esc(sug.match)}»` : 'por movimientos anteriores'}</small>` : ''}</span>
+      <div class="pills scroll">${pills(cats.map((c) => [c, c]), (v) => v === f.cat, 'form-cat')}${f.mode !== 'inc' ? '<button class="pill" data-act="new-cat" data-v="add">+ Nueva</button>' : ''}</div>
+      ${f.mode !== 'inc' && catObj && catObj.subs.length ? `<span class="field-label">Subcategoría</span>
+        <div class="pills scroll">${pills(catObj.subs.map((s) => [s, s]), (v) => v === f.sub, 'form-sub')}</div>` : ''}`;
+  }
+
+  // Sugiere categoría a partir del comentario mientras no se haya elegido una a mano.
+  function suggestFromNote(sheet) {
+    const f = form;
+    if (f.editId || f.catTouched) return;
+    const sug = L.suggestCategory(state, f.note, f.mode === 'inc' ? 'inc' : 'exp');
+    if (!sug || (sug.cat === f.cat && sug.sub === f.sub && f.suggested)) return;
+    Object.assign(f, { cat: sug.cat, sub: sug.sub, suggested: sug });
+    sheet.querySelector('#f-cat').innerHTML = catBlock();
+    sheet.querySelectorAll('#f-cat .pill.on').forEach((el) => el.scrollIntoView({ block: 'nearest', inline: 'center' }));
     const imp = impact();
+    sheet.querySelector('#f-impact').innerHTML = imp ? `<div class="notice ${imp.tone}">${esc(imp.text)}</div>` : '';
+  }
+
+  function renderAdd() {
+    const f = form;
+    const imp = impact();
+    const people = L.peopleOf(state);
+    if (sync.user && !people.includes(sync.user)) people.push(sync.user);
     const modes = f.editId ? [['exp', 'Gasto'], ['inc', 'Ingreso']] : [['exp', 'Gasto'], ['inc', 'Ingreso'], ['bill', 'Factura']];
     return `<h3>${f.editId ? 'Editar movimiento' : 'Agregar'}</h3>
       ${f.scanNote ? `<div class="notice amber" style="margin:6px 0 14px">${esc(f.scanNote)}</div>` : f.editId ? '<div style="height:10px"></div>' : `
@@ -932,10 +976,7 @@
       <div class="amount-row"><span class="cur">${f.cur === 'COP' ? '$' : f.cur === 'ARS' ? 'AR$' : 'US$'}</span>
         <input id="f-amount" inputmode="numeric" autocomplete="off" placeholder="0" value="${L.groupDigits(f.digits)}" aria-label="Monto"></div>
       <div class="pills" style="margin-top:10px">${pills(L.CURRENCIES.map((c) => [c, c]), (v) => v === f.cur, 'form-cur')}</div>
-      <span class="field-label">Categoría</span>
-      <div class="pills scroll">${pills(cats.map((c) => [c, c]), (v) => v === f.cat, 'form-cat')}${f.mode !== 'inc' ? '<button class="pill" data-act="new-cat" data-v="add">+ Nueva</button>' : ''}</div>
-      ${f.mode !== 'inc' && catObj && catObj.subs.length ? `<span class="field-label">Subcategoría</span>
-        <div class="pills scroll">${pills(catObj.subs.map((s) => [s, s]), (v) => v === f.sub, 'form-sub')}</div>` : ''}
+      <div id="f-cat">${catBlock()}</div>
       <span class="field-label">${f.mode === 'bill' ? 'Nombre de la factura' : 'Comentario'}</span>
       <input class="input" id="f-note" maxlength="60" value="${esc(f.note)}" placeholder="${f.mode === 'bill' ? 'Ej: Internet hogar' : 'Opcional'}">
       ${f.mode === 'bill' ? `
@@ -949,6 +990,8 @@
         <input class="input" id="f-date" type="date" value="${f.date}">`}
       ${f.mode === 'exp' ? `<span class="field-label">Medio de pago</span>
         <div class="pills">${pills(state.methods.map((m) => [m, m]), (v) => v === f.method, 'form-method')}</div>` : ''}
+      ${f.mode !== 'bill' ? `<span class="field-label">${f.mode === 'inc' ? '¿Quién lo recibió?' : '¿Quién pagó?'} <small class="hint">· opcional</small></span>
+        <div class="pills">${pills(people.map((p) => [p, p]), (v) => v === f.paidBy, 'form-paid')}</div>` : ''}
       <div id="f-impact">${imp ? `<div class="notice ${imp.tone}">${esc(imp.text)}</div>` : ''}</div>
       <button class="primary" id="f-save" data-act="form-save" ${f.digits ? '' : 'disabled'}>${f.editId ? 'Guardar cambios' : f.mode === 'exp' ? 'Guardar gasto' : f.mode === 'inc' ? 'Guardar ingreso' : 'Guardar factura'}</button>`;
   }
@@ -964,6 +1007,8 @@
     };
     const bind = (sel, key) => { const el = sheet.querySelector(sel); if (el) el.oninput = () => { form[key] = el.value; }; };
     bind('#f-note', 'note');
+    const note = sheet.querySelector('#f-note');
+    if (note) note.addEventListener('input', () => suggestFromNote(sheet));
     bind('#f-date', 'date');
     bind('#f-due', 'due');
     const due = sheet.querySelector('#f-due');
@@ -991,12 +1036,13 @@
       toast(`Factura guardada · vence el ${L.shortDate(f.due)}`, 'green');
     } else {
       if (!f.date) return toast('Elegí la fecha', 'red');
-      const data = { date: f.date, type: f.mode, cat: f.cat, sub: f.mode === 'inc' ? '' : f.sub, note: f.note.trim(), amount, cur: f.cur, method: f.mode === 'exp' ? f.method : '' };
+      const data = { date: f.date, type: f.mode, cat: f.cat, sub: f.mode === 'inc' ? '' : f.sub, note: f.note.trim(), amount, cur: f.cur,
+        method: f.mode === 'exp' ? f.method : '', paidBy: f.paidBy || '' };
       const existing = f.editId && state.movements.find((m) => m.id === f.editId);
       if (existing) {
         Object.assign(existing, data);
         toast('Movimiento actualizado', 'green');
-      } else state.movements.push({ id: L.uid(), ...data });
+      } else state.movements.push({ id: L.uid(), ...data, by: sync.user || '' }); // la planilla completa «Cargado por» igual
       if (existing) { /* aviso ya mostrado */ } else if (f.mode === 'inc') {
         toast(`Ingreso guardado en ${f.cat}`, 'green');
       } else {
@@ -1536,8 +1582,9 @@
       renderSheet();
     },
     'form-cur': (d) => { form.cur = d.v; renderSheet(); },
-    'form-cat': (d) => { form.cat = d.v; form.sub = ''; renderSheet(); },
-    'form-sub': (d) => { form.sub = form.sub === d.v ? '' : d.v; renderSheet(); },
+    'form-cat': (d) => { form.cat = d.v; form.sub = ''; form.catTouched = true; renderSheet(); },
+    'form-sub': (d) => { form.sub = form.sub === d.v ? '' : d.v; form.catTouched = true; renderSheet(); },
+    'form-paid': (d) => { form.paidBy = form.paidBy === d.v ? '' : d.v; renderSheet(); },
     'form-method': (d) => { form.method = d.v; renderSheet(); },
     'form-rec': () => { form.recurring = !form.recurring; renderSheet(); },
     'form-alert': (d) => {
@@ -1569,6 +1616,10 @@
       refreshMovResults();
     },
     'mov-more': () => { ui.mov.limit += 100; refreshMovResults(); },
+    'mov-person': (d) => {
+      Object.assign(ui.mov, { q: '', period: 'month', month: d.month, type: 'exp', cat: '', method: '', person: d.v, limit: 100 });
+      ACTIONS.tab({ v: 'movimientos' });
+    },
     'mov-csv': () => {
       const r = movResults();
       download(`cuentas-casa-movimientos-${today}.csv`, '\ufeff' + L.toCSV({ movements: r.list, bills: [] }), 'text/csv');
@@ -1606,7 +1657,7 @@
     if (e.target.id === 'mov-q') { ui.mov.q = e.target.value; ui.mov.limit = 100; refreshMovResults(); }
   });
   document.addEventListener('change', (e) => {
-    const map = { 'mov-period': 'period', 'mov-type': 'type', 'mov-cat': 'cat', 'mov-method': 'method' };
+    const map = { 'mov-period': 'period', 'mov-type': 'type', 'mov-cat': 'cat', 'mov-method': 'method', 'mov-person': 'person' };
     if (!map[e.target.id]) return;
     ui.mov[map[e.target.id]] = e.target.value;
     ui.mov.limit = 100;
