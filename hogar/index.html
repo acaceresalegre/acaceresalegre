@@ -16,6 +16,22 @@
 </head>
 <body>
   <div class="app">
+    <aside class="sidebar" aria-label="Secciones">
+      <div class="brand">Cuentas Casa</div>
+      <button class="primary side-add" data-act="add">+ Agregar</button>
+      <nav class="side-nav">
+        <button class="side-tab" data-tab="inicio">Resumen</button>
+        <button class="side-tab" data-tab="movimientos">Movimientos</button>
+        <button class="side-tab" data-tab="vencimientos">Vencimientos<span class="badge" id="badge-side" hidden></span></button>
+        <button class="side-tab" data-tab="presupuesto">Presupuesto</button>
+        <button class="side-tab" data-tab="deudas">Deudas</button>
+      </nav>
+      <div class="side-foot">
+        <button class="side-tab" data-act="scan">Escanear ticket</button>
+        <button class="side-tab" data-act="settings">Ajustes</button>
+        <div class="side-sync" id="side-sync"></div>
+      </div>
+    </aside>
     <main id="screen" class="screen"></main>
     <nav class="tabbar" id="tabbar">
       <button class="tab" data-tab="inicio">Inicio</button>
@@ -30,8 +46,10 @@
   <section class="sheet" id="sheet" role="dialog" aria-modal="true" hidden></section>
   <div class="toast" id="toast" role="status"></div>
   <button class="notif" id="notif" type="button"></button>
+  <div class="viz-tip" id="viz-tip" role="tooltip" hidden></div>
 
   <script src="lib.js"></script>
+  <script src="charts.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

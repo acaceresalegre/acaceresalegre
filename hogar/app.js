@@ -2,6 +2,9 @@
   'use strict';
 
   const L = window.CasaLib;
+  const C = window.CasaCharts;
+  const desktopMQ = window.matchMedia('(min-width: 1024px)');
+  const isDesktop = () => desktopMQ.matches;
   const STORAGE_KEY = 'cuentas-casa-v1';
   const SYNC_KEY = 'cuentas-casa-sync';
   const POLL_MS = 20000;
@@ -38,6 +41,8 @@
     selDay: null,
     budMode: 'month',
     yearSel: null,
+    dashMonth: null, // mes del dashboard (null = mes actual)
+    mov: { q: '', period: 'month', month: null, type: 'all', cat: '', method: '', sort: 'date', dir: 'desc', limit: 100 },
     sheet: null, // { render, mount }
   };
 
@@ -222,7 +227,8 @@
 
   function movRow(m) {
     const title = m.note || m.sub || m.cat;
-    const sub = [m.cat, m.sub, `día ${L.dayOf(m.date)}`].filter(Boolean).join(' · ');
+    const when = L.monthKey(m.date) === curMonth ? `día ${L.dayOf(m.date)}` : dateTxt(m.date);
+    const sub = [m.cat, m.sub, when].filter(Boolean).join(' · ');
     return `<button class="mov" data-act="mov" data-id="${m.id}">
       <span class="grow"><b>${esc(title)}</b><small>${esc(sub)}</small></span>
       <span class="amt ${m.type === 'inc' ? 'inc' : ''}">${m.type === 'inc' ? '+' : ''}${esc(shown(m))}</span>
@@ -291,7 +297,7 @@
       </section>
 
       <section class="sec">
-        <div class="sec-head"><h2>Últimos movimientos</h2></div>
+        <div class="sec-head"><h2>Últimos movimientos</h2><button class="link" data-act="tab" data-v="movimientos">Ver todos</button></div>
         <div class="list-card">${movs.length ? movs.map(movRow).join('') : '<div class="empty">Sin movimientos este mes</div>'}</div>
       </section>`;
   }
@@ -334,7 +340,7 @@
       if (!list) list = '<div class="card empty" style="margin-top:18px">No hay facturas este mes</div>';
     }
 
-    return `<section class="card r22">
+    return `<div class="split"><div class="col-side"><section class="card r22">
         <div class="cal-nav">
           <button data-act="cal-month" data-v="-1" aria-label="Mes anterior">‹</button>
           <b>${esc(L.monthLabel(key))}</b>
@@ -346,9 +352,9 @@
       <div class="card setting-row" style="margin-top:12px">
         <span><b>Agregar al calendario</b><small>Eventos a las 9:00 con tus avisos</small></span>
         <button class="pill on" data-act="ics">Descargar</button>
-      </div>
-      ${list}
-      <button class="dashed" data-act="add" data-v="bill">+ Nueva factura</button>`;
+      </div></div>
+      <div>${list}
+      <button class="dashed" data-act="add" data-v="bill">+ Nueva factura</button></div></div>`;
   }
 
   function renderPorCobrar() {
@@ -425,7 +431,7 @@
         <span><b>Avisarme al llegar al</b></span>
         <span class="seg">${[70, 80, 90].map((n) => `<button class="${n === th ? 'on' : ''}" data-act="threshold" data-v="${n}">${n}%</button>`).join('')}</span>
       </div>
-      <div class="stack" style="margin-top:12px">${cards}</div>
+      <div class="stack cat-grid" style="margin-top:12px">${cards}</div>
       <button class="dashed" data-act="new-cat">+ Nueva categoría</button>`;
   }
 
@@ -531,20 +537,200 @@
         <div class="line"><span>Cuotas del mes</span><b class="num">${esc(money(monthly))}</b></div>
         <div class="line"><span>Pagadas</span><b>${paid} de ${loans.length}</b></div>
       </section>
-      <div class="stack" style="margin-top:12px">${cards || '<div class="card empty">No hay préstamos cargados</div>'}</div>
+      <div class="stack loan-grid" style="margin-top:12px">${cards || '<div class="card empty">No hay préstamos cargados</div>'}</div>
       ${state.synced ? '' : '<button class="dashed" data-act="loan-new">+ Nuevo préstamo</button>'}`;
   }
 
   // ---------- Render ----------
-  const SCREENS = { inicio: renderInicio, vencimientos: renderVencimientos, presupuesto: renderPresupuesto, deudas: renderDeudas };
+  // ---------- Pantalla: Resumen (computadora) ----------
+  const monthTitle = (key) => cap(L.monthLabel(key));
+  const dateTxt = (iso) => L.shortDate(iso) + (iso.slice(0, 4) !== today.slice(0, 4) ? ' ' + iso.slice(0, 4) : '');
+  const shortMonth = (key) => L.MON[Number(key.slice(5, 7)) - 1] + (key.endsWith('-01') ? ' ' + key.slice(2, 4) : '');
+
+  function delta(now, before, upIsGood) {
+    if (!before) return '<div class="delta">Sin datos del mes anterior</div>';
+    const pct = ((now - before) / Math.abs(before)) * 100;
+    if (Math.abs(pct) < 0.5) return '<div class="delta">Igual que el mes anterior</div>';
+    const good = pct > 0 === upIsGood;
+    return `<div class="delta"><span class="${good ? 'tone-green' : 'tone-red'}">${pct > 0 ? '▲' : '▼'} ${Math.abs(Math.round(pct))}%</span> vs. mes anterior</div>`;
+  }
+
+  function renderDashboard() {
+    const key = ui.dashMonth || curMonth;
+    const prev = L.addMonths(key, -1);
+    const sum = L.monthSummary(state, key);
+    const before = L.monthSummary(state, prev);
+    const stats = L.categoryStats(state, key, today);
+    const limit = stats.reduce((s, c) => s + c.limit, 0);
+    const spent = stats.reduce((s, c) => s + c.spent, 0);
+    const rate = sum.income ? (sum.balance / sum.income) * 100 : null;
+    const rateBefore = before.income ? (before.balance / before.income) * 100 : null;
+    const alerts = L.buildAlerts(state, today);
+    const upcoming = state.bills.filter((b) => !b.paid).sort((a, b) => a.due.localeCompare(b.due)).slice(0, 6);
+    const movs = L.filterMovements(state, { period: 'month', month: key }, today).list.slice(0, 8);
+    const isCur = key === curMonth;
+
+    return header('Resumen financiero', 'Resumen') + `
+      <div class="filters">
+        <span class="month-nav"><button data-act="dash-month" data-v="-1" aria-label="Mes anterior">‹</button><b>${esc(L.monthLabel(key))}</b><button data-act="dash-month" data-v="1" aria-label="Mes siguiente">›</button></span>
+        ${isCur ? '' : '<button class="pill" data-act="dash-month" data-v="0">Mes actual</button>'}
+      </div>
+      <div class="kpis">
+        <div class="tile hero"><div class="lbl">Ahorro de ${esc(L.monthName(key))}</div>
+          <div class="big num ${sum.balance < 0 ? 'tone-red' : ''}">${esc(money(sum.balance))}</div>
+          <div class="delta">${isCur ? `Te quedaría a fin de mes ${esc(money(sum.remaining))}` : `Facturas sin pagar ${esc(money(sum.pending))}`}</div></div>
+        <div class="tile"><div class="lbl">Ingresos</div><div class="val">${esc(short(sum.income))}</div>${delta(sum.income, before.income, true)}</div>
+        <div class="tile"><div class="lbl">Gastos</div><div class="val">${esc(short(sum.expense))}</div>${delta(sum.expense, before.expense, false)}</div>
+        <div class="tile"><div class="lbl">Tasa de ahorro</div><div class="val">${rate === null ? '—' : pctTxt(rate)}</div>
+          <div class="delta">${rate !== null && rateBefore !== null ? `Mes anterior: ${pctTxt(rateBefore)}` : 'Ahorro sobre ingresos'}</div></div>
+        <div class="tile"><div class="lbl">Presupuesto usado</div><div class="val">${limit ? pctTxt((spent / limit) * 100) : '—'}</div>
+          <div class="delta">${esc(short(spent))} de ${esc(short(limit))}${isCur ? ` · día ${L.dayOf(today)} de ${L.daysInMonth(key)}` : ''}</div></div>
+      </div>
+
+      <div class="dash" style="margin-top:16px">
+        <section class="card r20 span-7">
+          <div class="sec-head"><h2>Ingresos y gastos · últimos 12 meses</h2></div>
+          <div class="viz-legend"><span><i class="sw inc"></i>Ingresos</span><span><i class="sw exp"></i>Gastos</span></div>
+          <div class="chart-box" data-chart="trend"></div>
+          <details class="data-table"><summary>Ver tabla</summary>${trendTable(key)}</details>
+        </section>
+        <section class="card r20 span-5">
+          <div class="sec-head"><h2>Gasto acumulado de ${esc(L.monthName(key))}</h2></div>
+          <div class="viz-legend"><span><i class="ln exp"></i>Gastado</span>${isCur ? '<span><i class="ln exp dash"></i>Proyección</span>' : ''}<span><i class="ln ref"></i>Presupuesto</span></div>
+          <div class="chart-box" data-chart="cumulative"></div>
+        </section>
+        <section class="card r20 span-7">
+          <div class="sec-head"><h2>Gasto por categoría</h2><button class="link" data-act="tab" data-v="presupuesto">Ver presupuesto</button></div>
+          <div class="viz-legend"><span><i class="sw exp"></i>Gastado</span><span><i class="tk"></i>Presupuesto</span></div>
+          <div class="chart-box" data-chart="categories"></div>
+        </section>
+        <section class="span-5 stack">
+          <div class="card r20">
+            <div class="sec-head"><h2>Próximos vencimientos</h2><button class="link" data-act="tab" data-v="vencimientos">Ver todos</button></div>
+            <div class="stack">${upcoming.length ? upcoming.map(billRow).join('') : '<div class="empty">No hay facturas pendientes.</div>'}</div>
+          </div>
+          <div class="card r20">
+            <div class="sec-head"><h2>Alertas</h2>${alerts.length > 5 ? `<button class="link" data-act="all-alerts">Ver todas (${alerts.length})</button>` : ''}</div>
+            <div class="stack">${alerts.length ? alerts.slice(0, 5).map(alertRow).join('') : '<div class="empty">Todo en orden.</div>'}</div>
+          </div>
+        </section>
+        <section class="span-12">
+          <div class="sec-head"><h2>Movimientos de ${esc(L.monthName(key))}</h2><button class="link" data-act="mov-open-month" data-v="${key}">Ver todos</button></div>
+          ${movTable(movs, false)}
+        </section>
+      </div>`;
+  }
+
+  function trendTable(key) {
+    const rows = L.monthSeries(state, key, 12);
+    return `<div class="tbl-wrap" style="margin-top:8px"><table class="tbl"><thead><tr><th>Mes</th><th class="n">Ingresos</th><th class="n">Gastos</th><th class="n">Ahorro</th></tr></thead><tbody>${
+      rows.map((m) => `<tr><td>${esc(monthTitle(m.key))}</td><td class="n">${esc(money(m.income))}</td><td class="n">${esc(money(m.expense))}</td><td class="n">${esc(money(m.income - m.expense))}</td></tr>`).join('')}</tbody></table></div>`;
+  }
+
+  // Dibuja los gráficos con el ancho real de su contenedor.
+  function drawCharts() {
+    const key = ui.dashMonth || curMonth;
+    document.querySelectorAll('.chart-box[data-chart]').forEach((box) => {
+      const width = Math.floor(box.clientWidth);
+      if (!width) return;
+      const fmtVal = (v) => money(v);
+      const fmtAxis = (v) => (v ? short(v) : '0');
+      let res;
+      if (box.dataset.chart === 'trend') {
+        const months = L.monthSeries(state, key, 12).map((m) => ({ ...m, label: shortMonth(m.key), title: monthTitle(m.key) }));
+        res = C.trend({ months, selected: key, width, fmtAxis, fmtVal });
+      } else if (box.dataset.chart === 'cumulative') {
+        const d = L.dailySpend(state, key, today);
+        const lastDay = key < curMonth ? d.dim : key === curMonth ? L.dayOf(today) : 0;
+        res = C.cumulative({
+          ...d, lastDay, showProjection: key === curMonth, width, fmtAxis, fmtVal, fmtLabel: (v) => short(v),
+          dayLabel: (n, long) => (long ? cap(L.longDate(`${key}-${String(n).padStart(2, '0')}`)) : String(n)),
+        });
+      } else if (box.dataset.chart === 'categories') {
+        const rows = L.categoryStats(state, key, today).filter((c) => c.spent > 0 || c.limit > 0)
+          .sort((a, b) => b.spent - a.spent || b.limit - a.limit).map((c) => ({ name: c.name, spent: c.spent, limit: c.limit }));
+        res = rows.length ? C.categories({ rows, width, fmtVal: (v) => short(v), statusText: 'excedido' }) : { svg: '<div class="empty">Sin gastos en el mes</div>' };
+      }
+      box.innerHTML = res.svg;
+      box._hover = res.hover || null;
+    });
+  }
+
+  // ---------- Pantalla: Movimientos (lista completa) ----------
+  function movTable(list, sortable) {
+    if (!list.length) return '<div class="card empty">Sin movimientos para estos filtros</div>';
+    if (!isDesktop()) return `<div class="list-card">${list.map(movRow).join('')}</div>`;
+    const f = ui.mov;
+    const th = (label, sortKey, cls = '') => {
+      if (!sortable || !sortKey) return `<th class="${cls}">${label}</th>`;
+      const arrow = f.sort === sortKey ? (f.dir === 'asc' ? ' ↑' : ' ↓') : '';
+      return `<th class="${cls}"><button data-act="mov-sort" data-v="${sortKey}">${label}${arrow}</button></th>`;
+    };
+    return `<div class="tbl-wrap"><table class="tbl">
+      <thead><tr>${th('Fecha', 'date')}${th('Detalle')}${th('Categoría')}${th('Medio de pago')}${th('Importe', 'amount', 'n')}${th(`En ${dc()}`, null, 'n')}</tr></thead>
+      <tbody>${list.map((m) => `<tr data-act="mov" data-id="${esc(m.id)}">
+        <td>${esc(dateTxt(m.date))}</td>
+        <td>${esc(m.note || m.sub || m.cat)}</td>
+        <td>${esc(m.cat)}${m.sub ? `<br><small>${esc(m.sub)}</small>` : ''}</td>
+        <td>${esc(m.method || '')}</td>
+        <td class="n ${m.type === 'inc' ? 'inc' : ''}">${m.type === 'inc' ? '+' : ''}${esc(orig(m))}</td>
+        <td class="n">${esc(money(cop(m)))}</td>
+      </tr>`).join('')}</tbody></table></div>`;
+  }
+
+  function renderMovimientos() {
+    const f = ui.mov;
+    const key = f.month || curMonth;
+    const cats = [...state.categories.map((c) => c.name), ...state.incomeCats];
+    const opt = (v, label, cur) => `<option value="${esc(v)}" ${v === cur ? 'selected' : ''}>${esc(label)}</option>`;
+    return header('Gastos e ingresos', 'Movimientos') + `
+      <div class="filters">
+        <input class="input search" id="mov-q" type="search" placeholder="Buscar comentario, categoría…" value="${esc(f.q)}" aria-label="Buscar">
+        <select id="mov-period" aria-label="Período">${[['month', 'Mes'], ['3m', 'Últimos 3 meses'], ['year', 'Año ' + key.slice(0, 4)], ['all', 'Todo']].map(([v, l]) => opt(v, l, f.period)).join('')}</select>
+        ${f.period === 'month' ? `<span class="month-nav"><button data-act="mov-month" data-v="-1" aria-label="Mes anterior">‹</button><b>${esc(L.monthLabel(key))}</b><button data-act="mov-month" data-v="1" aria-label="Mes siguiente">›</button></span>` : ''}
+        <select id="mov-type" aria-label="Tipo">${[['all', 'Gastos e ingresos'], ['exp', 'Gastos'], ['inc', 'Ingresos']].map(([v, l]) => opt(v, l, f.type)).join('')}</select>
+        <select id="mov-cat" aria-label="Categoría">${opt('', 'Todas las categorías', f.cat)}${cats.map((c) => opt(c, c, f.cat)).join('')}</select>
+        <select id="mov-method" aria-label="Medio de pago">${opt('', 'Todos los medios', f.method)}${state.methods.map((m) => opt(m, m, f.method)).join('')}</select>
+        <button class="pill" data-act="mov-csv">Exportar CSV</button>
+      </div>
+      <div id="mov-results">${renderMovResults()}</div>`;
+  }
+
+  function movResults() {
+    return L.filterMovements(state, { ...ui.mov, month: ui.mov.month || curMonth }, today);
+  }
+
+  function renderMovResults() {
+    const r = movResults();
+    const shown = r.list.slice(0, ui.mov.limit);
+    return `<div class="totals"><span><b>${r.list.length}</b> movimientos</span><span>Ingresos <b>${esc(money(r.income))}</b></span>
+        <span>Gastos <b>${esc(money(r.expense))}</b></span><span>Neto <b class="${r.net < 0 ? 'tone-red' : ''}">${esc(money(r.net))}</b></span></div>
+      ${movTable(shown, true)}
+      ${r.list.length > shown.length ? `<button class="more" data-act="mov-more">Mostrar ${Math.min(100, r.list.length - shown.length)} más</button>` : ''}`;
+  }
+
+  function refreshMovResults() {
+    const box = $('#mov-results');
+    if (box) box.innerHTML = renderMovResults();
+  }
+
+  const SCREENS = {
+    inicio: () => (isDesktop() ? renderDashboard() : renderInicio()),
+    movimientos: renderMovimientos, vencimientos: renderVencimientos, presupuesto: renderPresupuesto, deudas: renderDeudas,
+  };
 
   function renderScreen() {
     $('#screen').innerHTML = SCREENS[ui.tab]();
-    document.querySelectorAll('.tab').forEach((t) => t.classList.toggle('on', t.dataset.tab === ui.tab));
+    document.querySelectorAll('.tab, .side-tab[data-tab]').forEach((t) => t.classList.toggle('on', t.dataset.tab === ui.tab));
     const n = urgentBills().length;
-    const badge = $('#badge');
-    badge.hidden = !n;
-    badge.textContent = n;
+    ['#badge', '#badge-side'].forEach((sel) => {
+      const badge = $(sel);
+      badge.hidden = !n;
+      badge.textContent = n;
+    });
+    const side = $('#side-sync');
+    if (side) side.textContent = isSynced() ? `Planilla conectada${sync.user ? ' · ' + sync.user : ''}` : 'Datos solo en este dispositivo';
+    drawCharts();
   }
 
   function refresh() {
@@ -692,8 +878,16 @@
           <div class="kv"><span>Monto</span><b class="num">${esc(orig(m))}${m.cur !== dc() ? `<br><small style="color:var(--ink-2);font-weight:500">≈ ${esc(money(cop(m)))}</small>` : ''}</b></div>
           ${m.method ? `<div class="kv"><span>Medio de pago</span><b>${esc(m.method)}</b></div>` : ''}
         </div>
+        <button class="primary" data-act="mov-edit" data-id="${m.id}">Editar</button>
         <button class="danger-link" data-act="mov-del" data-id="${m.id}">Eliminar movimiento</button>`;
     });
+  }
+
+  function editMovement(id) {
+    const m = state.movements.find((x) => x.id === id);
+    if (!m) return;
+    openAdd(m.type, { editId: m.id, digits: String(Math.round(m.amount)), cur: m.cur, cat: m.cat, sub: m.sub || '',
+      note: m.note || '', method: m.method || state.methods[0], date: m.date });
   }
 
   // --- Agregar (gasto, ingreso o factura) ---
@@ -730,10 +924,11 @@
     const cats = f.mode === 'inc' ? state.incomeCats : state.categories.map((c) => c.name);
     const catObj = state.categories.find((c) => c.name === f.cat);
     const imp = impact();
-    return `<h3>Agregar</h3>
-      ${f.scanNote ? `<div class="notice amber" style="margin:6px 0 14px">${esc(f.scanNote)}</div>` : `
+    const modes = f.editId ? [['exp', 'Gasto'], ['inc', 'Ingreso']] : [['exp', 'Gasto'], ['inc', 'Ingreso'], ['bill', 'Factura']];
+    return `<h3>${f.editId ? 'Editar movimiento' : 'Agregar'}</h3>
+      ${f.scanNote ? `<div class="notice amber" style="margin:6px 0 14px">${esc(f.scanNote)}</div>` : f.editId ? '<div style="height:10px"></div>' : `
       <button class="shortcut" style="margin:6px 0 14px" data-act="scan"><span class="ico">${scanIcon}</span><span class="grow"><b>Escanear ticket o factura</b></span><span class="chev">›</span></button>`}
-      <div class="seg wide">${[['exp', 'Gasto'], ['inc', 'Ingreso'], ['bill', 'Factura']].map(([v, l]) => `<button class="${f.mode === v ? 'on' : ''}" data-act="form-mode" data-v="${v}">${l}</button>`).join('')}</div>
+      <div class="seg wide">${modes.map(([v, l]) => `<button class="${f.mode === v ? 'on' : ''}" data-act="form-mode" data-v="${v}">${l}</button>`).join('')}</div>
       <div class="amount-row"><span class="cur">${f.cur === 'COP' ? '$' : f.cur === 'ARS' ? 'AR$' : 'US$'}</span>
         <input id="f-amount" inputmode="numeric" autocomplete="off" placeholder="0" value="${L.groupDigits(f.digits)}" aria-label="Monto"></div>
       <div class="pills" style="margin-top:10px">${pills(L.CURRENCIES.map((c) => [c, c]), (v) => v === f.cur, 'form-cur')}</div>
@@ -755,7 +950,7 @@
       ${f.mode === 'exp' ? `<span class="field-label">Medio de pago</span>
         <div class="pills">${pills(state.methods.map((m) => [m, m]), (v) => v === f.method, 'form-method')}</div>` : ''}
       <div id="f-impact">${imp ? `<div class="notice ${imp.tone}">${esc(imp.text)}</div>` : ''}</div>
-      <button class="primary" id="f-save" data-act="form-save" ${f.digits ? '' : 'disabled'}>${f.mode === 'exp' ? 'Guardar gasto' : f.mode === 'inc' ? 'Guardar ingreso' : 'Guardar factura'}</button>`;
+      <button class="primary" id="f-save" data-act="form-save" ${f.digits ? '' : 'disabled'}>${f.editId ? 'Guardar cambios' : f.mode === 'exp' ? 'Guardar gasto' : f.mode === 'inc' ? 'Guardar ingreso' : 'Guardar factura'}</button>`;
   }
 
   function mountAdd(sheet) {
@@ -796,8 +991,13 @@
       toast(`Factura guardada · vence el ${L.shortDate(f.due)}`, 'green');
     } else {
       if (!f.date) return toast('Elegí la fecha', 'red');
-      state.movements.push({ id: L.uid(), date: f.date, type: f.mode, cat: f.cat, sub: f.mode === 'inc' ? '' : f.sub, note: f.note.trim(), amount, cur: f.cur, method: f.mode === 'exp' ? f.method : '' });
-      if (f.mode === 'inc') {
+      const data = { date: f.date, type: f.mode, cat: f.cat, sub: f.mode === 'inc' ? '' : f.sub, note: f.note.trim(), amount, cur: f.cur, method: f.mode === 'exp' ? f.method : '' };
+      const existing = f.editId && state.movements.find((m) => m.id === f.editId);
+      if (existing) {
+        Object.assign(existing, data);
+        toast('Movimiento actualizado', 'green');
+      } else state.movements.push({ id: L.uid(), ...data });
+      if (existing) { /* aviso ya mostrado */ } else if (f.mode === 'inc') {
         toast(`Ingreso guardado en ${f.cat}`, 'green');
       } else {
         const s = L.categoryStats(state, L.monthKey(f.date), today).find((x) => x.name === f.cat);
@@ -1360,6 +1560,20 @@
       if (ui.sheet) renderSheet();
     },
     'sync-off': () => disconnect(),
+    'dash-month': (d) => { ui.dashMonth = Number(d.v) ? L.addMonths(ui.dashMonth || curMonth, Number(d.v)) : null; renderScreen(); },
+    'mov-open-month': (d) => { Object.assign(ui.mov, { period: 'month', month: d.v, limit: 100 }); ACTIONS.tab({ v: 'movimientos' }); },
+    'mov-month': (d) => { ui.mov.month = L.addMonths(ui.mov.month || curMonth, Number(d.v)); ui.mov.limit = 100; renderScreen(); },
+    'mov-sort': (d) => {
+      ui.mov.dir = ui.mov.sort === d.v && ui.mov.dir === 'desc' ? 'asc' : 'desc';
+      ui.mov.sort = d.v;
+      refreshMovResults();
+    },
+    'mov-more': () => { ui.mov.limit += 100; refreshMovResults(); },
+    'mov-csv': () => {
+      const r = movResults();
+      download(`cuentas-casa-movimientos-${today}.csv`, '\ufeff' + L.toCSV({ movements: r.list, bills: [] }), 'text/csv');
+    },
+    'mov-edit': (d) => editMovement(d.id),
     'export-csv': () => download(`cuentas-casa-${today}.csv`, '﻿' + L.toCSV(state), 'text/csv'),
     'export-json': () => download(`cuentas-casa-backup-${today}.json`, JSON.stringify(state, null, 2), 'application/json'),
     'clear-samples': () => {
@@ -1386,6 +1600,86 @@
     if (fn) fn(el.dataset);
   });
   $('#scrim').addEventListener('click', closeSheet);
+
+  // Filtros de Movimientos: solo se vuelve a dibujar la tabla, así el buscador no pierde el foco.
+  document.addEventListener('input', (e) => {
+    if (e.target.id === 'mov-q') { ui.mov.q = e.target.value; ui.mov.limit = 100; refreshMovResults(); }
+  });
+  document.addEventListener('change', (e) => {
+    const map = { 'mov-period': 'period', 'mov-type': 'type', 'mov-cat': 'cat', 'mov-method': 'method' };
+    if (!map[e.target.id]) return;
+    ui.mov[map[e.target.id]] = e.target.value;
+    ui.mov.limit = 100;
+    if (e.target.id === 'mov-period') renderScreen();
+    else refreshMovResults();
+  });
+
+  // Tooltips de los gráficos (el texto se arma con textContent: los nombres vienen de la planilla).
+  const tip = $('#viz-tip');
+  function showTip(data, x, y) {
+    tip.replaceChildren();
+    const t = document.createElement('div');
+    t.className = 't';
+    t.textContent = data.t;
+    tip.appendChild(t);
+    for (const [label, value, key] of data.r) {
+      const row = document.createElement('div');
+      row.className = 'r';
+      const k = document.createElement('i');
+      if (key) k.className = key;
+      const b = document.createElement('b');
+      b.textContent = value;
+      const sp = document.createElement('span');
+      sp.textContent = label;
+      row.append(k, b, sp);
+      tip.appendChild(row);
+    }
+    tip.hidden = false;
+    const w = tip.offsetWidth;
+    const h = tip.offsetHeight;
+    tip.style.left = Math.min(window.innerWidth - w - 8, Math.max(8, x + 14)) + 'px';
+    tip.style.top = Math.max(8, y - h - 12) + 'px';
+  }
+  const hideTip = () => {
+    tip.hidden = true;
+    document.querySelectorAll('.viz-cross').forEach((l) => l.setAttribute('visibility', 'hidden'));
+  };
+  document.addEventListener('pointermove', (e) => {
+    const el = e.target.closest && e.target.closest('[data-tip], [data-cross]');
+    if (!el) { if (!tip.hidden) hideTip(); return; }
+    if (el.dataset.tip) return showTip(JSON.parse(el.dataset.tip), e.clientX, e.clientY);
+    const box = el.closest('.chart-box');
+    const items = box && box._hover;
+    if (!items) return;
+    const svg = el.ownerSVGElement;
+    const px = e.clientX - svg.getBoundingClientRect().left;
+    const near = items.reduce((a, b) => (Math.abs(b.x - px) < Math.abs(a.x - px) ? b : a));
+    const line = svg.querySelector('.viz-cross');
+    line.setAttribute('x1', near.x);
+    line.setAttribute('x2', near.x);
+    line.setAttribute('visibility', 'visible');
+    showTip({ t: near.title, r: near.rows }, e.clientX, e.clientY);
+  });
+  document.addEventListener('focusin', (e) => {
+    const el = e.target.closest && e.target.closest('[data-tip]');
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    showTip(JSON.parse(el.dataset.tip), r.left + r.width / 2, r.top);
+  });
+  document.addEventListener('focusout', hideTip);
+  document.addEventListener('scroll', hideTip, true);
+
+  // Clic en un mes del gráfico: el dashboard pasa a ese mes. Clic en una categoría: su detalle.
+  document.addEventListener('click', (e) => {
+    const m = e.target.closest && e.target.closest('[data-month]');
+    if (m) { ui.dashMonth = m.dataset.month === curMonth ? null : m.dataset.month; hideTip(); renderScreen(); return; }
+    const c = e.target.closest && e.target.closest('[data-cat]');
+    if (c) { hideTip(); openCategory(c.dataset.cat); }
+  });
+
+  let resizeTimer = null;
+  window.addEventListener('resize', () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(drawCharts, 120); });
+  desktopMQ.addEventListener('change', () => renderScreen());
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && ui.sheet) closeSheet(); });
 
   renderScreen();
