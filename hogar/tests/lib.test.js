@@ -338,3 +338,74 @@ test('sugerencia de categoría: reglas primero, después el historial', () => {
   assert.deepEqual(L.suggestCategory(s, 'Recarga celular', 'exp'), { cat: 'Gastos fijos', sub: 'Celular', source: 'historial' });
   assert.equal(L.suggestCategory(s, 're', 'exp'), null);
 });
+
+// ---------- Metas ----------
+const conMetas = () => ({
+  ...TABLES,
+  'Metas': [
+    { ID: 'G1', Nombre: 'Vacaciones', 'Monto objetivo': 6000000, Moneda: 'COP', 'Fecha objetivo': '2027-03-31', 'Ahorro inicial': 1000000, Activa: 'Sí' },
+    { ID: 'G2', Nombre: 'Auto viejo', 'Monto objetivo': 1, Moneda: 'COP', Activa: 'No' },
+  ],
+  'Movimientos': [
+    ...TABLES['Movimientos'],
+    { ID: 'A1', Fecha: '2026-08-05', Tipo: 'Ahorro', 'Categoría': 'Ahorro', 'Subcategoría': 'Vacaciones', 'Meta ID': 'G1', Moneda: 'COP', Importe: 500000 },
+    { ID: 'A2', Fecha: '2026-10-05', Tipo: 'Ahorro', 'Categoría': 'Ahorro', 'Subcategoría': 'Vacaciones', 'Meta ID': 'G1', Moneda: 'COP', Importe: 700000 },
+    { ID: 'A3', Fecha: '2026-10-09', Tipo: 'Ahorro', 'Categoría': 'Ahorro', 'Subcategoría': 'Vacaciones', 'Meta ID': 'G1', Moneda: 'COP', Importe: -100000, 'Pagó': 'Karo' },
+  ],
+});
+
+test('metas: los aportes son movimientos de Ahorro que no cuentan como gasto', () => {
+  const s = L.sheetToState(conMetas(), null, TODAY);
+  assert.deepEqual(s.goals.map((g) => [g.id, g.name, g.target, g.due, g.initial]), [['G1', 'Vacaciones', 6000000, '2027-03-31', 1000000]]);
+  const a2 = s.movements.find((m) => m.id === 'A2');
+  assert.deepEqual([a2.type, a2.goalId, a2.cat], ['save', 'G1', 'Vacaciones']);
+  const sum = L.monthSummary(s, '2026-10');
+  assert.equal(sum.expense, 187940, 'el aporte no suma a gastos');
+  assert.equal(sum.saved, 600000);
+  assert.equal(sum.remaining, sum.income - sum.expense - sum.pending - 600000);
+  assert.equal(L.categoryStats(s, '2026-10', TODAY).reduce((x, c) => x + c.spent, 0), 187940);
+  assert.deepEqual(L.spendByPerson(s, '2026-10').map((r) => r.name), ['Sin asignar'], 'los aportes no van a gastos por persona');
+  const f = L.filterMovements(s, { period: 'month', month: '2026-10', type: 'save' }, TODAY);
+  assert.deepEqual([f.list.length, f.expense, f.saved], [2, 0, 600000]);
+});
+
+test('metas: avance, cuánto falta por mes, ritmo y fecha estimada', () => {
+  const s = L.sheetToState(conMetas(), null, TODAY);
+  const p = L.goalProgress(s, s.goals[0], TODAY);
+  assert.equal(p.saved, 1000000 + 500000 + 700000 - 100000);
+  assert.equal(p.left, 6000000 - 2100000);
+  assert.equal(p.monthsLeft, 6, 'de octubre a marzo inclusive');
+  assert.equal(p.needed, 3900000 / 6);
+  assert.equal(p.pace, 1100000 / 3);
+  assert.equal(p.status, 'behind');
+  assert.equal(p.eta, L.addMonths('2026-10', Math.ceil(3900000 / (1100000 / 3)) - 1));
+  // Meta nueva: un solo mes de aportes se promedia sobre ese mes.
+  const nueva = { id: 'G9', name: 'Nueva', target: 1000000, cur: 'COP', due: '2027-01-31', initial: 0 };
+  s.movements.push({ id: 'A9', date: TODAY, type: 'save', goalId: 'G9', cat: 'Nueva', amount: 250000, cur: 'COP' });
+  assert.deepEqual([L.goalProgress(s, nueva, TODAY).pace, L.goalProgress(s, nueva, TODAY).status], [250000, 'ok']);
+  s.goals[0].target = 2000000;
+  assert.equal(L.goalProgress(s, s.goals[0], TODAY).status, 'done');
+  s.goals[0].due = '';
+  s.goals[0].target = 9000000;
+  assert.equal(L.goalProgress(s, s.goals[0], TODAY).status, 'nodate');
+  // Meta en USD con aportes en COP.
+  const usd = { id: 'G1', name: 'x', target: 1000, cur: 'USD', due: '', initial: 0 };
+  assert.ok(Math.abs(L.goalProgress(s, usd, TODAY).saved - 1100000 / s.settings.rates.USD) < 1e-6);
+});
+
+test('metas: vuelven a la planilla y una meta borrada se manda a borrar', () => {
+  const s = L.sheetToState(conMetas(), null, TODAY);
+  const before = L.stateToRows(s);
+  assert.deepEqual(L.diffRows(before, L.stateToRows(s)), []);
+  const a3 = before['Movimientos'].find((r) => r.ID === 'A3');
+  assert.deepEqual([a3['Tipo'], a3['Categoría'], a3['Subcategoría'], a3['Meta ID'], a3['Importe']], ['Ahorro', 'Ahorro', 'Vacaciones', 'G1', -100000]);
+  assert.equal(before['Movimientos'].find((r) => r.ID === 'M2')['Meta ID'], undefined, 'los gastos no llevan Meta ID');
+  s.goals[0].name = 'Viaje';
+  s.movements.push({ id: 'A4', date: TODAY, type: 'save', goalId: 'G1', cat: 'Viaje', sub: '', note: '', amount: 50000, cur: 'COP', method: '' });
+  const ops = L.diffRows(before, L.stateToRows(s));
+  assert.deepEqual(ops.map((o) => [o.table, o.op, o.row.ID]).sort(), [
+    ['Metas', 'upsert', 'G1'], ['Movimientos', 'upsert', 'A1'], ['Movimientos', 'upsert', 'A2'], ['Movimientos', 'upsert', 'A3'], ['Movimientos', 'upsert', 'A4']].sort());
+  s.goals = [];
+  assert.deepEqual(L.diffRows(before, L.stateToRows(s)).filter((o) => o.table === 'Metas').map((o) => o.op), ['delete']);
+  assert.match(L.toCSV(s), /"Ahorro";"Viaje"/);
+});

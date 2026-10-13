@@ -11,6 +11,7 @@ Moneda base COP, con ARS y USD para cargar y visualizar.
 - **Inicio**: saldo del mes, facturas por pagar, «te quedaría a fin de mes», alertas, próximos vencimientos, presupuesto y últimos movimientos.
 - **Vencimientos**: calendario mensual con puntos de estado (vencida / por vencer / pagada), lista agrupada y check de pago. Pestaña *Por cobrar* para las facturas emitidas por Karo (al cobrarlas se crea el ingreso en «Sueldo Karo»).
 - **Presupuesto**: este mes (gastado, proyección de cierre, umbral de aviso 70/80/90 %, una tarjeta por categoría) y año (ahorro, gráfico mensual contra presupuesto, comparación por categoría).
+- **Metas**: metas de ahorro con monto, fecha objetivo y ahorro inicial. Cada una muestra el avance, cuánto falta por mes para llegar a tiempo, el ritmo de los últimos 3 meses y cuándo se alcanzaría a ese ritmo. Los aportes (y retiros) se cargan con **+ → Ahorro** y quedan en Movimientos con tipo «Ahorro»: no cuentan como gasto ni entran al presupuesto, pero se descuentan de «te quedaría a fin de mes». En el celular Metas y Deudas están en la pestaña **Patrimonio**.
 - **Deudas**: hipotecas y préstamos con su cuota mensual, estado, saldo y avance.
 - **+**: agregar gasto, ingreso o factura (con repetición mensual y recordatorios), mostrando el impacto en el presupuesto antes de guardar. Al escribir el comentario sugiere la categoría (reglas de la pestaña Reglas o lo usado antes) y permite indicar, opcionalmente, quién pagó.
 - **Escanear**: foto de un ticket o factura → lee comercio, total y fecha y abre el formulario ya completo para revisar.
@@ -41,7 +42,10 @@ Conectada a la planilla «Cuentas Casa - base de datos», la app lee y escribe a
 - Cada movimiento guarda quién lo cargó (**Cargado por**, según el enlace con el que se conectó cada uno) y,
   si se indica, quién pagó (**Pagó**). Los totales por persona usan «Pagó» y, si está vacío, «Cargado por».
 - Mails de cierre: un **cierre preliminar** 4 días antes de fin de mes para corregir lo que falte y un **resumen**
-  el día 1, a las direcciones de **Ajustes → Correos del resumen** de la planilla.
+  el día 1, a las direcciones de **Ajustes → Correos del resumen** de la planilla. El resumen incluye lo aportado
+  a metas y el avance de cada una.
+- Las metas se guardan en la pestaña **Metas** (se crea sola con la primera meta). Borrar una meta la marca como
+  inactiva; sus aportes quedan en Movimientos.
 
 La primera vez se cargan **datos de ejemplo** para ver la app funcionando; se quitan con **Ajustes → Quitar datos de ejemplo**
 (se conservan las categorías y los préstamos).

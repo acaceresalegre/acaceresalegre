@@ -225,13 +225,16 @@
     </div>`;
   }
 
+  const movTitle = (m) => m.note || (m.type === 'save' ? `${m.amount < 0 ? 'Retiro de' : 'Aporte a'} ${m.cat}` : m.sub || m.cat);
+  const amtCls = (m) => (m.type === 'inc' ? 'inc' : m.type === 'save' ? 'save' : '');
+  const amtSign = (m) => (m.type === 'inc' ? '+' : m.type === 'save' && m.amount > 0 ? '→ ' : '');
+
   function movRow(m) {
-    const title = m.note || m.sub || m.cat;
     const when = L.monthKey(m.date) === curMonth ? `día ${L.dayOf(m.date)}` : dateTxt(m.date);
-    const sub = [m.cat, m.sub, when, L.personOf(m)].filter(Boolean).join(' · ');
+    const sub = [m.type === 'save' ? 'Ahorro' : '', m.cat, m.sub, when, L.personOf(m)].filter(Boolean).join(' · ');
     return `<button class="mov" data-act="mov" data-id="${m.id}">
-      <span class="grow"><b>${esc(title)}</b><small>${esc(sub)}</small></span>
-      <span class="amt ${m.type === 'inc' ? 'inc' : ''}">${m.type === 'inc' ? '+' : ''}${esc(shown(m))}</span>
+      <span class="grow"><b>${esc(movTitle(m))}</b><small>${esc(sub)}</small></span>
+      <span class="amt ${amtCls(m)}">${amtSign(m)}${esc(shown(m))}</span>
     </button>`;
   }
 
@@ -269,6 +272,7 @@
         </div>
         <hr>
         <div class="line"><span>Facturas por pagar</span><b class="num">${esc(money(sum.pending))}</b></div>
+        ${sum.saved ? `<div class="line"><span>Aportado a metas</span><b class="num">${esc(money(sum.saved))}</b></div>` : ''}
         <div class="line"><span>Te quedaría a fin de mes</span><b class="num ${sum.remaining < 0 ? 'neg' : ''}">${esc(money(sum.remaining))}</b></div>
       </section>
 
@@ -295,6 +299,16 @@
           <div class="meta"><span>Gastaste ${esc(money(spent))} de ${esc(money(limit))} · día ${L.dayOf(today)} de ${L.daysInMonth(curMonth)}</span></div>
         </button>
       </section>
+
+      ${(state.goals || []).length ? `<section class="sec">
+        <button class="card r20 tap" data-act="tab" data-v="metas">
+          <div class="sec-head" style="margin-bottom:6px"><h2>Metas de ahorro</h2><span class="chev">›</span></div>
+          ${state.goals.slice(0, 3).map((g) => {
+            const p = L.goalProgress(state, g, today);
+            return `<div class="meta" style="margin-top:8px"><span>${esc(g.name)}</span><span class="num">${pctTxt(p.pct)}</span></div>${bar(p.pct, p.status === 'done' ? 'green' : 'save')}`;
+          }).join('')}
+        </button>
+      </section>` : ''}
 
       <section class="sec">
         <div class="sec-head"><h2>Últimos movimientos</h2><button class="link" data-act="tab" data-v="movimientos">Ver todos</button></div>
@@ -528,7 +542,7 @@
       </button>`;
     }).join('');
 
-    return header('Hipotecas y préstamos', 'Deudas') + `
+    return header('Hipotecas y préstamos', 'Deudas') + patSeg() + `
       <section class="dark">
         <div class="lbl">Saldo total adeudado</div>
         <div class="big num">${known.length ? esc(money(totalBalance)) : '—'}</div>
@@ -539,6 +553,143 @@
       </section>
       <div class="stack loan-grid" style="margin-top:12px">${cards || '<div class="card empty">No hay préstamos cargados</div>'}</div>
       ${state.synced ? '' : '<button class="dashed" data-act="loan-new">+ Nuevo préstamo</button>'}`;
+  }
+
+  // ---------- Pantalla: Metas ----------
+  // En el celular Metas y Deudas comparten la pestaña «Patrimonio».
+  const patSeg = () => (isDesktop() ? '' : `<div class="seg wide" style="margin-bottom:14px">${[['metas', 'Metas'], ['deudas', 'Deudas']]
+    .map(([v, l]) => `<button class="${ui.tab === v ? 'on' : ''}" data-act="tab" data-v="${v}">${l}</button>`).join('')}</div>`);
+  const GOAL_CHIP = {
+    done: '<span class="chip green">Cumplida</span>', ok: '<span class="chip green">Al día</span>',
+    behind: '<span class="chip amber">Atrasada</span>', late: '<span class="chip red">Venció el plazo</span>', nodate: '<span class="chip">Sin fecha</span>',
+  };
+  const monthTxt = (key) => L.MON[Number(key.slice(5, 7)) - 1] + ' ' + key.slice(0, 4);
+  const gMoney = (g, v) => L.formatMoney(v, g.cur);
+
+  function goalLines(g, p) {
+    if (p.status === 'done') return [`Ahorraste ${gMoney(g, p.saved)}: meta cumplida.`];
+    const out = [];
+    if (p.needed != null && p.status !== 'late') out.push(`Faltan ${gMoney(g, p.left)}: ${gMoney(g, p.needed)} por mes hasta ${monthTxt(g.due.slice(0, 7))}`);
+    else out.push(`Faltan ${gMoney(g, p.left)}`);
+    out.push(p.pace > 0 ? `Ritmo de los últimos 3 meses: ${gMoney(g, p.pace)} por mes${p.eta ? ` → la alcanzás en ${monthTxt(p.eta)}` : ''}` : 'Todavía sin aportes en los últimos 3 meses');
+    return out;
+  }
+
+  function goalCard(g) {
+    const p = L.goalProgress(state, g, today);
+    return `<div class="card cat-card goal-card">
+      <button class="tap goal-open" data-act="goal" data-id="${esc(g.id)}">
+        <div class="top"><span class="name">${esc(g.name)}</span>${GOAL_CHIP[p.status]}</div>
+        <div class="goal-amt"><b class="num">${esc(gMoney(g, p.saved))}</b><span> de ${esc(gMoney(g, p.target))} · ${pctTxt(p.pct)}</span></div>
+        ${bar(p.pct, p.status === 'done' ? 'green' : 'save', { size: 'h7' })}
+        <div class="goal-lines">${goalLines(g, p).map((t) => `<small>${esc(t)}</small>`).join('')}</div>
+      </button>
+      <button class="pill" data-act="goal-add" data-id="${esc(g.id)}">+ Aportar</button>
+    </div>`;
+  }
+
+  function renderMetas() {
+    const goals = state.goals || [];
+    const rows = goals.map((g) => ({ g, p: L.goalProgress(state, g, today) }));
+    const totalSaved = rows.reduce((s, r) => s + cop({ amount: r.p.saved, cur: r.g.cur }), 0);
+    const totalTarget = rows.reduce((s, r) => s + cop({ amount: r.p.target, cur: r.g.cur }), 0);
+    const month = L.monthSummary(state, curMonth).saved;
+    return header('Ahorro', 'Metas') + patSeg() + `
+      <section class="dark">
+        <div class="lbl">Ahorrado en metas</div>
+        <div class="big num">${esc(money(totalSaved))}</div>
+        <div class="cols">
+          <div><span class="lbl">Objetivo total</span><b class="num">${esc(money(totalTarget))}</b></div>
+          <div><span class="lbl">Aportado en ${esc(L.monthName(curMonth))}</span><b class="num inc">${esc(money(month))}</b></div>
+        </div>
+      </section>
+      <div class="stack loan-grid" style="margin-top:12px">${goals.length ? goals.map(goalCard).join('')
+        : '<div class="card empty">Todavía no hay metas. Creá una con el monto, la fecha y lo que ya tengan ahorrado.</div>'}</div>
+      <button class="dashed" data-act="goal-new">+ Nueva meta</button>
+      <p class="hint" style="margin-top:12px">Los aportes se cargan con <b>+ Agregar → Ahorro</b>. No cuentan como gasto ni entran en el presupuesto,
+        pero se descuentan de lo que «te quedaría» a fin de mes.</p>`;
+  }
+
+  // --- Detalle y formulario de meta ---
+  function openGoal(id) {
+    openSheet(() => {
+      const g = (state.goals || []).find((x) => x.id === id);
+      if (!g) return '<div class="empty">La meta ya no existe.</div>';
+      const p = L.goalProgress(state, g, today);
+      return `<h3>${esc(g.name)}</h3>
+        <p class="lead">${GOAL_CHIP[p.status]}</p>
+        ${bar(p.pct, p.status === 'done' ? 'green' : 'save', { size: 'h7' })}
+        <div class="card" style="margin-top:12px">
+          <div class="kv"><span>Ahorrado</span><b class="num">${esc(gMoney(g, p.saved))} · ${pctTxt(p.pct)}</b></div>
+          <div class="kv"><span>Objetivo</span><b class="num">${esc(gMoney(g, p.target))}</b></div>
+          ${g.due ? `<div class="kv"><span>Fecha objetivo</span><b>${esc(cap(L.longDate(g.due)) + (g.due.slice(0, 4) !== today.slice(0, 4) ? ' de ' + g.due.slice(0, 4) : ''))}</b></div>` : ''}
+          ${g.initial ? `<div class="kv"><span>Ahorro inicial</span><b class="num">${esc(gMoney(g, g.initial))}</b></div>` : ''}
+          ${p.needed != null && p.left > 0 ? `<div class="kv"><span>Hace falta por mes</span><b class="num">${esc(gMoney(g, p.needed))}</b></div>` : ''}
+          <div class="kv"><span>Ritmo (últimos 3 meses)</span><b class="num">${esc(gMoney(g, p.pace))} / mes</b></div>
+          ${p.eta ? `<div class="kv"><span>A este ritmo</span><b>${esc(cap(monthTxt(p.eta)))}</b></div>` : ''}
+        </div>
+        <button class="primary" data-act="goal-add" data-id="${esc(g.id)}">Aportar</button>
+        <div class="sec-head" style="margin-top:18px"><h2>Aportes</h2></div>
+        <div class="list-card">${p.movs.length ? p.movs.map(movRow).join('') : '<div class="empty">Sin aportes todavía.</div>'}</div>
+        <button class="pill" style="margin-top:14px" data-act="goal-edit" data-id="${esc(g.id)}">Editar meta</button>
+        <button class="danger-link" data-act="goal-del" data-id="${esc(g.id)}">Eliminar meta</button>`;
+    });
+  }
+
+  let goalForm = null;
+  function openGoalForm(id) {
+    const g = id && (state.goals || []).find((x) => x.id === id);
+    goalForm = g ? { id: g.id, name: g.name, digits: String(Math.round(g.target)), cur: g.cur, due: g.due || '', initial: g.initial ? String(Math.round(g.initial)) : '', note: g.note || '' }
+      : { id: null, name: '', digits: '', cur: 'COP', due: '', initial: '', note: '' };
+    openSheet(renderGoalForm, mountGoalForm);
+  }
+
+  function renderGoalForm() {
+    const f = goalForm;
+    return `<h3>${f.id ? 'Editar meta' : 'Nueva meta'}</h3>
+      <span class="field-label">Nombre</span>
+      <input class="input" id="g-name" maxlength="40" value="${esc(f.name)}" placeholder="Ej: Vacaciones, fondo de emergencia">
+      <span class="field-label">Monto objetivo</span>
+      <div class="amount-row"><span class="cur">${f.cur === 'COP' ? '$' : f.cur === 'ARS' ? 'AR$' : 'US$'}</span>
+        <input id="g-target" inputmode="numeric" autocomplete="off" placeholder="0" value="${L.groupDigits(f.digits)}" aria-label="Monto objetivo"></div>
+      <div class="pills" style="margin-top:10px">${pills(L.CURRENCIES.map((c) => [c, c]), (v) => v === f.cur, 'goal-cur')}</div>
+      <span class="field-label">Fecha objetivo <small class="hint">· opcional</small></span>
+      <input class="input" id="g-due" type="date" value="${esc(f.due)}">
+      <span class="field-label">Ya ahorrado <small class="hint">· opcional, lo que tenían antes de empezar a cargar aportes</small></span>
+      <input class="input" id="g-initial" inputmode="numeric" autocomplete="off" placeholder="0" value="${L.groupDigits(f.initial)}">
+      <button class="primary" id="g-save" data-act="goal-save" ${f.name.trim() && f.digits ? '' : 'disabled'}>${f.id ? 'Guardar cambios' : 'Crear meta'}</button>`;
+  }
+
+  function mountGoalForm(sheet) {
+    const btn = sheet.querySelector('#g-save');
+    const check = () => { btn.disabled = !(goalForm.name.trim() && goalForm.digits); };
+    const name = sheet.querySelector('#g-name');
+    name.oninput = () => { goalForm.name = name.value; check(); };
+    const money = (sel, key) => {
+      const el = sheet.querySelector(sel);
+      el.oninput = () => { goalForm[key] = L.cleanDigits(el.value); el.value = L.groupDigits(goalForm[key]); check(); };
+    };
+    money('#g-target', 'digits');
+    money('#g-initial', 'initial');
+    const due = sheet.querySelector('#g-due');
+    due.oninput = () => { goalForm.due = due.value; };
+  }
+
+  function saveGoal() {
+    const f = goalForm;
+    if (!f.name.trim() || !Number(f.digits)) return;
+    const data = { name: f.name.trim(), target: Number(f.digits), cur: f.cur, due: f.due || '', initial: Number(f.initial) || 0, note: f.note || '' };
+    state.goals = state.goals || [];
+    const g = f.id && state.goals.find((x) => x.id === f.id);
+    if (g) {
+      Object.assign(g, data);
+      // Los aportes guardan el nombre de la meta para leerlos en la planilla.
+      state.movements.forEach((m) => { if (m.type === 'save' && m.goalId === g.id) m.cat = g.name; });
+    } else state.goals.push({ id: L.uid(), ...data });
+    toast(g ? 'Meta actualizada' : `Meta «${data.name}» creada`, 'green');
+    goalForm = null;
+    closeSheet();
+    save();
   }
 
   // ---------- Render ----------
@@ -578,7 +729,7 @@
       <div class="kpis">
         <div class="tile hero"><div class="lbl">Ahorro de ${esc(L.monthName(key))}</div>
           <div class="big num ${sum.balance < 0 ? 'tone-red' : ''}">${esc(money(sum.balance))}</div>
-          <div class="delta">${isCur ? `Te quedaría a fin de mes ${esc(money(sum.remaining))}` : `Facturas sin pagar ${esc(money(sum.pending))}`}</div></div>
+          <div class="delta">${isCur ? `Te quedaría a fin de mes ${esc(money(sum.remaining))}` : `Facturas sin pagar ${esc(money(sum.pending))}`}${sum.saved ? ` · a metas ${esc(short(sum.saved))}` : ''}</div></div>
         <div class="tile"><div class="lbl">Ingresos</div><div class="val">${esc(short(sum.income))}</div>${delta(sum.income, before.income, true)}</div>
         <div class="tile"><div class="lbl">Gastos</div><div class="val">${esc(short(sum.expense))}</div>${delta(sum.expense, before.expense, false)}</div>
         <div class="tile"><div class="lbl">Tasa de ahorro</div><div class="val">${rate === null ? '—' : pctTxt(rate)}</div>
@@ -685,11 +836,11 @@
       <thead><tr>${th('Fecha', 'date')}${th('Detalle')}${th('Categoría')}${th('Medio de pago')}${th('Persona')}${th('Importe', 'amount', 'n')}${th(`En ${dc()}`, null, 'n')}</tr></thead>
       <tbody>${list.map((m) => `<tr data-act="mov" data-id="${esc(m.id)}">
         <td>${esc(dateTxt(m.date))}</td>
-        <td>${esc(m.note || m.sub || m.cat)}</td>
-        <td>${esc(m.cat)}${m.sub ? `<br><small>${esc(m.sub)}</small>` : ''}</td>
+        <td>${esc(movTitle(m))}</td>
+        <td>${m.type === 'save' ? `Ahorro<br><small>${esc(m.cat)}</small>` : `${esc(m.cat)}${m.sub ? `<br><small>${esc(m.sub)}</small>` : ''}`}</td>
         <td>${esc(m.method || '')}</td>
         <td>${esc(L.personOf(m))}${m.paidBy && m.by && m.by !== m.paidBy ? `<br><small>cargó ${esc(m.by)}</small>` : ''}</td>
-        <td class="n ${m.type === 'inc' ? 'inc' : ''}">${m.type === 'inc' ? '+' : ''}${esc(orig(m))}</td>
+        <td class="n ${amtCls(m)}">${amtSign(m)}${esc(orig(m))}</td>
         <td class="n">${esc(money(cop(m)))}</td>
       </tr>`).join('')}</tbody></table></div>`;
   }
@@ -704,7 +855,7 @@
         <input class="input search" id="mov-q" type="search" placeholder="Buscar comentario, categoría…" value="${esc(f.q)}" aria-label="Buscar">
         <select id="mov-period" aria-label="Período">${[['month', 'Mes'], ['3m', 'Últimos 3 meses'], ['year', 'Año ' + key.slice(0, 4)], ['all', 'Todo']].map(([v, l]) => opt(v, l, f.period)).join('')}</select>
         ${f.period === 'month' ? `<span class="month-nav"><button data-act="mov-month" data-v="-1" aria-label="Mes anterior">‹</button><b>${esc(L.monthLabel(key))}</b><button data-act="mov-month" data-v="1" aria-label="Mes siguiente">›</button></span>` : ''}
-        <select id="mov-type" aria-label="Tipo">${[['all', 'Gastos e ingresos'], ['exp', 'Gastos'], ['inc', 'Ingresos']].map(([v, l]) => opt(v, l, f.type)).join('')}</select>
+        <select id="mov-type" aria-label="Tipo">${[['all', 'Todos los tipos'], ['exp', 'Gastos'], ['inc', 'Ingresos'], ['save', 'Ahorro']].map(([v, l]) => opt(v, l, f.type)).join('')}</select>
         <select id="mov-cat" aria-label="Categoría">${opt('', 'Todas las categorías', f.cat)}${cats.map((c) => opt(c, c, f.cat)).join('')}</select>
         <select id="mov-method" aria-label="Medio de pago">${opt('', 'Todos los medios', f.method)}${state.methods.map((m) => opt(m, m, f.method)).join('')}</select>
         <select id="mov-person" aria-label="Persona">${opt('', 'Todas las personas', f.person)}${L.peopleOf(state).map((p) => opt(p, p, f.person)).join('')}${opt('-', 'Sin asignar', f.person)}</select>
@@ -721,7 +872,7 @@
     const r = movResults();
     const shown = r.list.slice(0, ui.mov.limit);
     return `<div class="totals"><span><b>${r.list.length}</b> movimientos</span><span>Ingresos <b>${esc(money(r.income))}</b></span>
-        <span>Gastos <b>${esc(money(r.expense))}</b></span><span>Neto <b class="${r.net < 0 ? 'tone-red' : ''}">${esc(money(r.net))}</b></span></div>
+        <span>Gastos <b>${esc(money(r.expense))}</b></span><span>Neto <b class="${r.net < 0 ? 'tone-red' : ''}">${esc(money(r.net))}</b></span>${r.saved ? `<span>A metas <b>${esc(money(r.saved))}</b></span>` : ''}</div>
       ${movTable(shown, true)}
       ${r.list.length > shown.length ? `<button class="more" data-act="mov-more">Mostrar ${Math.min(100, r.list.length - shown.length)} más</button>` : ''}`;
   }
@@ -733,12 +884,14 @@
 
   const SCREENS = {
     inicio: () => (isDesktop() ? renderDashboard() : renderInicio()),
-    movimientos: renderMovimientos, vencimientos: renderVencimientos, presupuesto: renderPresupuesto, deudas: renderDeudas,
+    movimientos: renderMovimientos, vencimientos: renderVencimientos, presupuesto: renderPresupuesto, deudas: renderDeudas, metas: renderMetas,
   };
 
   function renderScreen() {
     $('#screen').innerHTML = SCREENS[ui.tab]();
-    document.querySelectorAll('.tab, .side-tab[data-tab]').forEach((t) => t.classList.toggle('on', t.dataset.tab === ui.tab));
+    const mobileTab = ui.tab === 'deudas' ? 'metas' : ui.tab;
+    document.querySelectorAll('.side-tab[data-tab]').forEach((t) => t.classList.toggle('on', t.dataset.tab === ui.tab));
+    document.querySelectorAll('.tab').forEach((t) => t.classList.toggle('on', t.dataset.tab === mobileTab));
     const n = urgentBills().length;
     ['#badge', '#badge-side'].forEach((sel) => {
       const badge = $(sel);
@@ -887,14 +1040,14 @@
     openSheet(() => {
       const m = state.movements.find((x) => x.id === id);
       if (!m) return '<div class="empty">El movimiento ya no existe.</div>';
-      return `<h3>${esc(m.note || m.sub || m.cat)}</h3>
-        <p class="lead">${m.type === 'inc' ? 'Ingreso' : 'Gasto'}</p>
+      return `<h3>${esc(movTitle(m))}</h3>
+        <p class="lead">${m.type === 'inc' ? 'Ingreso' : m.type === 'save' ? (m.amount < 0 ? 'Retiro de ahorro' : 'Aporte a una meta') : 'Gasto'}</p>
         <div class="card">
-          <div class="kv"><span>Categoría</span><b>${esc([m.cat, m.sub].filter(Boolean).join(' · '))}</b></div>
+          <div class="kv"><span>${m.type === 'save' ? 'Meta' : 'Categoría'}</span><b>${esc([m.cat, m.sub].filter(Boolean).join(' · '))}</b></div>
           <div class="kv"><span>Fecha</span><b>${esc(cap(L.longDate(m.date)))}</b></div>
           <div class="kv"><span>Monto</span><b class="num">${esc(orig(m))}${m.cur !== dc() ? `<br><small style="color:var(--ink-2);font-weight:500">≈ ${esc(money(cop(m)))}</small>` : ''}</b></div>
           ${m.method ? `<div class="kv"><span>Medio de pago</span><b>${esc(m.method)}</b></div>` : ''}
-          ${m.paidBy ? `<div class="kv"><span>${m.type === 'inc' ? 'Lo recibió' : 'Pagó'}</span><b>${esc(m.paidBy)}</b></div>` : ''}
+          ${m.paidBy ? `<div class="kv"><span>${m.type === 'inc' ? 'Lo recibió' : m.type === 'save' ? 'Aportó' : 'Pagó'}</span><b>${esc(m.paidBy)}</b></div>` : ''}
           ${m.by ? `<div class="kv"><span>Cargado por</span><b>${esc(m.by)}</b></div>` : ''}
         </div>
         <button class="primary" data-act="mov-edit" data-id="${m.id}">Editar</button>
@@ -905,7 +1058,7 @@
   function editMovement(id) {
     const m = state.movements.find((x) => x.id === id);
     if (!m) return;
-    openAdd(m.type, { editId: m.id, digits: String(Math.round(m.amount)), cur: m.cur, cat: m.cat, sub: m.sub || '',
+    openAdd(m.type, { editId: m.id, digits: String(Math.round(Math.abs(m.amount))), withdraw: m.amount < 0, goalId: m.goalId || '', cur: m.cur, cat: m.cat, sub: m.sub || '',
       note: m.note || '', method: m.method || state.methods[0], paidBy: m.paidBy || '', date: m.date });
   }
 
@@ -918,11 +1071,23 @@
       mode: m, digits: '', cur: 'COP',
       cat: m === 'inc' ? state.incomeCats[0] : state.categories[0].name,
       sub: '', note: '', method: state.methods[0], paidBy: '', date: today, due: today,
-      recurring: false, alerts: [3, 0], scanNote: null, ...extra,
+      recurring: false, alerts: [3, 0], scanNote: null, withdraw: false,
+      goalId: ((state.goals || [])[0] || {}).id || '', ...extra,
     };
   }
 
   function impact() {
+    if (form.mode === 'save') {
+      const g = (state.goals || []).find((x) => x.id === form.goalId);
+      if (!g || !form.digits) return null;
+      const p = L.goalProgress(state, g, today);
+      const sign = form.withdraw ? -1 : 1;
+      const prevAmt = form.editId ? (state.movements.find((m) => m.id === form.editId) || {}) : null;
+      const before = p.saved - (prevAmt && prevAmt.goalId === g.id ? L.convert(prevAmt.amount, prevAmt.cur, g.cur, rates()) : 0);
+      const after = before + sign * L.convert(Number(form.digits), form.cur, g.cur, rates());
+      const pct = (v) => (p.target ? Math.max(0, (v / p.target) * 100) : 0);
+      return { tone: after >= p.target ? 'green' : '', text: `${g.name}: ${pctTxt(pct(before))} → ${pctTxt(pct(after))} de la meta` };
+    }
     if (form.mode === 'inc' || !form.digits) return null;
     const key = L.monthKey(form.mode === 'bill' ? form.due : form.date);
     const s = L.categoryStats(state, key, today).find((x) => x.name === form.cat);
@@ -953,7 +1118,7 @@
   // Sugiere categoría a partir del comentario mientras no se haya elegido una a mano.
   function suggestFromNote(sheet) {
     const f = form;
-    if (f.editId || f.catTouched) return;
+    if (f.editId || f.catTouched || f.mode === 'save') return;
     const sug = L.suggestCategory(state, f.note, f.mode === 'inc' ? 'inc' : 'exp');
     if (!sug || (sug.cat === f.cat && sug.sub === f.sub && f.suggested)) return;
     Object.assign(f, { cat: sug.cat, sub: sug.sub, suggested: sug });
@@ -968,7 +1133,14 @@
     const imp = impact();
     const people = L.peopleOf(state);
     if (sync.user && !people.includes(sync.user)) people.push(sync.user);
-    const modes = f.editId ? [['exp', 'Gasto'], ['inc', 'Ingreso']] : [['exp', 'Gasto'], ['inc', 'Ingreso'], ['bill', 'Factura']];
+    const modes = f.editId ? (f.mode === 'save' ? [['save', 'Ahorro']] : [['exp', 'Gasto'], ['inc', 'Ingreso']])
+      : [['exp', 'Gasto'], ['inc', 'Ingreso'], ['bill', 'Factura'], ['save', 'Ahorro']];
+    const goals = state.goals || [];
+    if (f.mode === 'save' && !goals.length) {
+      return `<h3>Agregar</h3><div class="seg wide">${modes.map(([v, l]) => `<button class="${f.mode === v ? 'on' : ''}" data-act="form-mode" data-v="${v}">${l}</button>`).join('')}</div>
+        <div class="card empty" style="margin-top:14px">Los aportes se hacen a una meta. Todavía no hay ninguna.</div>
+        <button class="primary" data-act="goal-new">Crear una meta</button>`;
+    }
     return `<h3>${f.editId ? 'Editar movimiento' : 'Agregar'}</h3>
       ${f.scanNote ? `<div class="notice amber" style="margin:6px 0 14px">${esc(f.scanNote)}</div>` : f.editId ? '<div style="height:10px"></div>' : `
       <button class="shortcut" style="margin:6px 0 14px" data-act="scan"><span class="ico">${scanIcon}</span><span class="grow"><b>Escanear ticket o factura</b></span><span class="chev">›</span></button>`}
@@ -976,7 +1148,9 @@
       <div class="amount-row"><span class="cur">${f.cur === 'COP' ? '$' : f.cur === 'ARS' ? 'AR$' : 'US$'}</span>
         <input id="f-amount" inputmode="numeric" autocomplete="off" placeholder="0" value="${L.groupDigits(f.digits)}" aria-label="Monto"></div>
       <div class="pills" style="margin-top:10px">${pills(L.CURRENCIES.map((c) => [c, c]), (v) => v === f.cur, 'form-cur')}</div>
-      <div id="f-cat">${catBlock()}</div>
+      ${f.mode === 'save' ? `<div class="seg" style="margin-top:12px">${[[false, 'Aporte'], [true, 'Retiro']].map(([v, l]) => `<button class="${f.withdraw === v ? 'on' : ''}" data-act="form-withdraw" data-v="${v ? 1 : ''}">${l}</button>`).join('')}</div>
+        <span class="field-label">Meta</span>
+        <div class="pills scroll">${pills(goals.map((g) => [g.id, g.name]), (v) => v === f.goalId, 'form-goal')}</div>` : `<div id="f-cat">${catBlock()}</div>`}
       <span class="field-label">${f.mode === 'bill' ? 'Nombre de la factura' : 'Comentario'}</span>
       <input class="input" id="f-note" maxlength="60" value="${esc(f.note)}" placeholder="${f.mode === 'bill' ? 'Ej: Internet hogar' : 'Opcional'}">
       ${f.mode === 'bill' ? `
@@ -990,10 +1164,10 @@
         <input class="input" id="f-date" type="date" value="${f.date}">`}
       ${f.mode === 'exp' ? `<span class="field-label">Medio de pago</span>
         <div class="pills">${pills(state.methods.map((m) => [m, m]), (v) => v === f.method, 'form-method')}</div>` : ''}
-      ${f.mode !== 'bill' ? `<span class="field-label">${f.mode === 'inc' ? '¿Quién lo recibió?' : '¿Quién pagó?'} <small class="hint">· opcional</small></span>
+      ${f.mode !== 'bill' ? `<span class="field-label">${f.mode === 'inc' ? '¿Quién lo recibió?' : f.mode === 'save' ? '¿Quién aportó?' : '¿Quién pagó?'} <small class="hint">· opcional</small></span>
         <div class="pills">${pills(people.map((p) => [p, p]), (v) => v === f.paidBy, 'form-paid')}</div>` : ''}
       <div id="f-impact">${imp ? `<div class="notice ${imp.tone}">${esc(imp.text)}</div>` : ''}</div>
-      <button class="primary" id="f-save" data-act="form-save" ${f.digits ? '' : 'disabled'}>${f.editId ? 'Guardar cambios' : f.mode === 'exp' ? 'Guardar gasto' : f.mode === 'inc' ? 'Guardar ingreso' : 'Guardar factura'}</button>`;
+      <button class="primary" id="f-save" data-act="form-save" ${f.digits ? '' : 'disabled'}>${f.editId ? 'Guardar cambios' : { exp: 'Guardar gasto', inc: 'Guardar ingreso', bill: 'Guardar factura', save: f.withdraw ? 'Guardar retiro' : 'Guardar aporte' }[f.mode]}</button>`;
   }
 
   function mountAdd(sheet) {
@@ -1036,14 +1210,21 @@
       toast(`Factura guardada · vence el ${L.shortDate(f.due)}`, 'green');
     } else {
       if (!f.date) return toast('Elegí la fecha', 'red');
-      const data = { date: f.date, type: f.mode, cat: f.cat, sub: f.mode === 'inc' ? '' : f.sub, note: f.note.trim(), amount, cur: f.cur,
-        method: f.mode === 'exp' ? f.method : '', paidBy: f.paidBy || '' };
+      const goal = f.mode === 'save' && (state.goals || []).find((g) => g.id === f.goalId);
+      if (f.mode === 'save' && !goal) return toast('Elegí la meta', 'red');
+      const data = goal
+        ? { date: f.date, type: 'save', goalId: goal.id, cat: goal.name, sub: '', note: f.note.trim(), amount: f.withdraw ? -amount : amount, cur: f.cur, method: '', paidBy: f.paidBy || '' }
+        : { date: f.date, type: f.mode, cat: f.cat, sub: f.mode === 'inc' ? '' : f.sub, note: f.note.trim(), amount, cur: f.cur,
+          method: f.mode === 'exp' ? f.method : '', paidBy: f.paidBy || '' };
       const existing = f.editId && state.movements.find((m) => m.id === f.editId);
       if (existing) {
         Object.assign(existing, data);
         toast('Movimiento actualizado', 'green');
       } else state.movements.push({ id: L.uid(), ...data, by: sync.user || '' }); // la planilla completa «Cargado por» igual
-      if (existing) { /* aviso ya mostrado */ } else if (f.mode === 'inc') {
+      if (existing) { /* aviso ya mostrado */ } else if (goal) {
+        const p = L.goalProgress(state, goal, today);
+        toast(`${f.withdraw ? 'Retiro' : 'Aporte'} guardado · ${goal.name} al ${pctTxt(p.pct)}`, 'green');
+      } else if (f.mode === 'inc') {
         toast(`Ingreso guardado en ${f.cat}`, 'green');
       } else {
         const s = L.categoryStats(state, L.monthKey(f.date), today).find((x) => x.name === f.cat);
@@ -1582,6 +1763,21 @@
       renderSheet();
     },
     'form-cur': (d) => { form.cur = d.v; renderSheet(); },
+    'form-goal': (d) => { form.goalId = d.v; renderSheet(); },
+    'form-withdraw': (d) => { form.withdraw = Boolean(d.v); renderSheet(); },
+    goal: (d) => openGoal(d.id),
+    'goal-new': () => openGoalForm(null),
+    'goal-edit': (d) => openGoalForm(d.id),
+    'goal-add': (d) => openAdd('save', { goalId: d.id }),
+    'goal-cur': (d) => { goalForm.cur = d.v; renderSheet(); },
+    'goal-save': () => saveGoal(),
+    'goal-del': (d) => {
+      const g = (state.goals || []).find((x) => x.id === d.id);
+      if (!g || !confirm(`¿Eliminar la meta «${g.name}»? Sus aportes quedan en Movimientos como ahorro.`)) return;
+      state.goals = state.goals.filter((x) => x.id !== d.id);
+      closeSheet();
+      save();
+    },
     'form-cat': (d) => { form.cat = d.v; form.sub = ''; form.catTouched = true; renderSheet(); },
     'form-sub': (d) => { form.sub = form.sub === d.v ? '' : d.v; form.catTouched = true; renderSheet(); },
     'form-paid': (d) => { form.paidBy = form.paidBy === d.v ? '' : d.v; renderSheet(); },

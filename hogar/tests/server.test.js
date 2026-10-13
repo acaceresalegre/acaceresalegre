@@ -243,3 +243,28 @@ test('resumen del mes anterior el día 1 con gastos por persona', () => {
   assert.match(m.htmlBody, /Alan<\/td><td[^>]*>\$ 250\.000/);
   assert.match(m.htmlBody, /Sin asignar<\/td><td[^>]*>\$ 250\.000/);
 });
+
+test('metas: la pestaña se crea al guardar la primera y los aportes no son gasto en el mail', () => {
+  const p = planilla();
+  p['Ajustes'].push(['Correos del resumen', 'alan@example.com', '']);
+  let now = D('2026-10-10');
+  const gas = createGas(p, { now: () => now });
+  gas.post({ token: 'secreto', user: 'Alan', ops: [
+    { table: 'Metas', op: 'upsert', row: { ID: 'G1', Nombre: 'Vacaciones', 'Monto objetivo': 1000000, Moneda: 'COP', 'Fecha objetivo': '2027-03-31', 'Ahorro inicial': 100000, Activa: 'Sí' } },
+    { table: 'Movimientos', op: 'upsert', row: { ID: 'A1', Fecha: '2026-10-09', Tipo: 'Ahorro', 'Categoría': 'Ahorro', 'Subcategoría': 'Vacaciones', 'Meta ID': 'G1', Moneda: 'COP', Importe: 300000 } },
+  ] });
+  assert.deepEqual(gas.sheets['Metas'].data[0], ['ID', 'Nombre', 'Monto objetivo', 'Moneda', 'Fecha objetivo', 'Ahorro inicial', 'Activa', 'Comentarios', 'Actualizado']);
+  const pulled = gas.get({ token: 'secreto', action: 'pull' }).tables;
+  assert.equal(pulled['Metas'][0]['Fecha objetivo'], '2027-03-31');
+  assert.equal(pulled['Movimientos'].find((m) => m.ID === 'A1')['Meta ID'], 'G1');
+  gas.post({ token: 'secreto', ops: [{ table: 'Metas', op: 'delete', row: { ID: 'G1' } }] });
+  assert.equal(rowsOf(gas, 'Metas')[0][6], 'No', 'borrar una meta la desactiva');
+  gas.post({ token: 'secreto', ops: [{ table: 'Metas', op: 'upsert', row: { ID: 'G1', Activa: 'Sí' } }] });
+
+  now = D('2026-11-01');
+  gas.run('tareaDiaria');
+  const html = gas.mails[0].htmlBody;
+  assert.match(html, /Aportado a metas en el mes: <b>\$ 300\.000/);
+  assert.match(html, /Gastos<\/div><div[^>]*>\$ 250\.000/, 'el aporte no suma a gastos');
+  assert.match(html, /Vacaciones.*\$ 400\.000.*\$ 1\.000\.000.*40%/);
+});

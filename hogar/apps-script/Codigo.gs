@@ -14,8 +14,8 @@ var EVENT_HOUR = 9;
 var TABLES = {
   'Movimientos': {
     key: ['ID'], dates: ['Fecha'],
-    text: ['ID', 'Tipo', 'Categoría', 'Subcategoría', 'Moneda', 'Medio de pago', 'Entidad', 'Comentarios', 'Cargado por', 'Pagó'],
-    addable: ['Pagó'], // columnas nuevas que se agregan solas si la planilla todavía no las tiene
+    text: ['ID', 'Tipo', 'Categoría', 'Subcategoría', 'Moneda', 'Medio de pago', 'Entidad', 'Comentarios', 'Cargado por', 'Pagó', 'Meta ID'],
+    addable: ['Pagó', 'Meta ID'], // columnas nuevas que se agregan solas si la planilla todavía no las tiene
   },
   'Facturas': {
     key: ['ID'], dates: ['Vence', 'Fecha de pago'],
@@ -37,8 +37,14 @@ var TABLES = {
   'Presupuesto': { readOnly: true, dates: ['Mes'] },
   'Listas': { readOnly: true, dates: [] },
   'Reglas': { readOnly: true, dates: [], optional: true },
+  'Metas': {
+    key: ['ID'], dates: ['Fecha objetivo'], optional: true,
+    text: ['ID', 'Nombre', 'Moneda', 'Activa', 'Comentarios'],
+    softDelete: { column: 'Activa', value: 'No' },
+    headers: ['ID', 'Nombre', 'Monto objetivo', 'Moneda', 'Fecha objetivo', 'Ahorro inicial', 'Activa', 'Comentarios', 'Actualizado'],
+  },
 };
-var PULL_TABLES = ['Movimientos', 'Facturas', 'Recurrentes', 'Por cobrar', 'Categorías', 'Ajustes', 'Deudas', 'Presupuesto', 'Listas', 'Reglas'];
+var PULL_TABLES = ['Movimientos', 'Facturas', 'Recurrentes', 'Por cobrar', 'Categorías', 'Ajustes', 'Deudas', 'Presupuesto', 'Listas', 'Reglas', 'Metas'];
 var REGLAS_HEADERS = ['Contiene', 'Categoría', 'Subcategoría', 'Tipo', 'Activa'];
 
 // ---------- Entrada web ----------
@@ -168,6 +174,7 @@ function applyOps(ops, user) {
   Object.keys(byTable).forEach(function (name) {
     var cfg = TABLES[name];
     if (!cfg || cfg.readOnly) throw new Error('La pestaña «' + name + '» no se puede modificar desde la app');
+    if (cfg.optional && !ss().getSheetByName(name)) crearPestana(name, cfg.headers);
     var wanted = {};
     byTable[name].forEach(function (op) { Object.keys(op.row || {}).forEach(function (h) { wanted[h] = true; }); });
     ensureHeaders(name, (cfg.addable || []).filter(function (h) { return wanted[h]; }));
@@ -459,8 +466,9 @@ function instalar() {
     });
   });
   corregirTasaArs();
-  ensureHeaders('Movimientos', ['Pagó']);
+  ensureHeaders('Movimientos', ['Pagó', 'Meta ID']);
   crearReglas();
+  crearPestana('Metas', TABLES['Metas'].headers);
   asegurarAjuste('Correos del resumen', Session.getEffectiveUser().getEmail(),
     'Separados por coma. Reciben el cierre preliminar (' + DIAS_ANTES_CIERRE + ' días antes de fin de mes) y el resumen (día 1).');
   ScriptApp.getProjectTriggers().forEach(function (tr) {
@@ -561,6 +569,23 @@ function tasas() {
 
 function aCop(item, campo, rates) { return (Number(item[campo]) || 0) * (rates[item['Moneda'] || 'COP'] || 1); }
 function esIngreso(m) { return m['Tipo'] === 'Ingreso' || m['Categoría'] === 'Ingresos'; }
+function esAhorro(m) { return m['Tipo'] === 'Ahorro'; }
+
+// Avance de cada meta activa: ahorro inicial más los aportes, en la moneda de la meta.
+function avanceMetas(rates) {
+  if (!ss().getSheetByName('Metas')) return [];
+  var aportes = {};
+  readTable('Movimientos').rows.forEach(function (m) {
+    if (esAhorro(m) && m['Meta ID']) aportes[m['Meta ID']] = (aportes[m['Meta ID']] || 0) + aCop(m, 'Importe', rates);
+  });
+  return readTable('Metas').rows.filter(function (g) { return g['ID'] && g['Activa'] !== 'No'; }).map(function (g) {
+    var cur = g['Moneda'] || 'COP';
+    var ahorrado = (Number(g['Ahorro inicial']) || 0) + (aportes[g['ID']] || 0) / (rates[cur] || 1);
+    var objetivo = Number(g['Monto objetivo']) || 0;
+    return { nombre: g['Nombre'], cur: cur, ahorrado: ahorrado, objetivo: objetivo, fecha: g['Fecha objetivo'] || '',
+      pct: objetivo ? Math.round((ahorrado / objetivo) * 100) : 0 };
+  });
+}
 
 function destinatarios() {
   var v = String(settingValue('Correos del resumen') || '');
@@ -576,12 +601,13 @@ function datosMes(key) {
   var bills = readTable('Facturas').rows;
   var presu = readTable('Presupuesto').rows;
   var enMes = function (iso) { return String(iso || '').slice(0, 7) === key; };
-  var d = { key: key, ingresos: 0, gastos: 0, cats: {}, personas: {}, pendientes: [], movs: [], rates: rates };
+  var d = { key: key, ingresos: 0, gastos: 0, aportes: 0, cats: {}, personas: {}, pendientes: [], movs: [], rates: rates };
   var cat = function (c) { return (d.cats[c] = d.cats[c] || { gastado: 0, limite: 0 }); };
   movs.forEach(function (m) {
     if (!enMes(m['Fecha'])) return;
     var v = aCop(m, 'Importe', rates);
     if (esIngreso(m)) { d.ingresos += v; return; }
+    if (esAhorro(m)) { d.aportes += v; return; } // aporte a una meta: no es gasto
     d.gastos += v;
     d.movs.push(m);
     cat(m['Categoría'] || 'Sin categoría').gastado += v;
@@ -610,7 +636,7 @@ function paraRevisar(d) {
   var desde = addMonthsKey(d.key, -6);
   readTable('Movimientos').rows.forEach(function (m) {
     var k = String(m['Fecha'] || '').slice(0, 7);
-    if (k < desde || k >= d.key || esIngreso(m)) return;
+    if (k < desde || k >= d.key || esIngreso(m) || esAhorro(m)) return;
     (historico[m['Categoría']] = historico[m['Categoría']] || []).push(aCop(m, 'Importe', d.rates));
   });
   var mediana = function (xs) {
@@ -704,13 +730,19 @@ function htmlResumenMensual(key) {
   };
   var personas = Object.keys(d.personas).sort(function (x, y) { return d.personas[y] - d.personas[x]; })
     .map(function (p) { return [h(p), pesos(d.personas[p]), d.gastos ? Math.round((d.personas[p] / d.gastos) * 100) + '%' : '—']; });
+  var metas = avanceMetas(d.rates);
   var cuerpo = cifras([['Ingresos', pesos(d.ingresos)], ['Gastos', pesos(d.gastos)], ['Ahorro', pesos(ahorro)], ['Tasa de ahorro', tasa]]) +
+    (d.aportes ? '<p style="font-size:14px;margin:0">Aportado a metas en el mes: <b>' + h(pesos(d.aportes)) + '</b></p>' : '') +
     bloque('Comparado con ' + nombreMes(addMonthsKey(key, -1)), tabla(['', 'Este mes', 'Mes anterior', 'Variación'], [
       ['Ingresos', pesos(d.ingresos), pesos(a.ingresos), vs(d.ingresos, a.ingresos, true)],
       ['Gastos', pesos(d.gastos), pesos(a.gastos), vs(d.gastos, a.gastos, false)],
     ])) +
     bloque('Gastos por categoría', tabla(['Categoría', 'Gastado', 'Presupuesto', 'Usado'], filaCategorias(d, false))) +
     bloque('Gastos por persona (movimientos)', tabla(['Persona', 'Gastado', 'Del total'], personas)) +
+    (metas.length ? bloque('Metas de ahorro', tabla(['Meta', 'Ahorrado', 'Objetivo', 'Avance'], metas.map(function (g) {
+      return [h(g.nombre) + (g.fecha ? '<br><span style="color:#6F6B63;font-size:12px">para el ' + h(fechaCorta(g.fecha)) + ' ' + h(String(g.fecha).slice(0, 4)) + '</span>' : ''),
+        h(money(g.ahorrado, g.cur)), h(money(g.objetivo, g.cur)), g.pct + '%'];
+    }))) : '') +
     bloque('Facturas que quedaron sin pagar', tabla(['Factura', 'Vence', 'Importe'],
       d.pendientes.map(function (b) { return [h(b['Nombre']), h(fechaCorta(b['Vence'])), h(money(b['Importe'], b['Moneda']))]; })));
   return { asunto: 'Cuentas Casa · Resumen de ' + nombreMes(key), html: marco('Resumen de ' + nombreMes(key), cuerpo) };
@@ -730,12 +762,18 @@ function probarMailCierre() {
 }
 
 // ---------- Instalación de lo nuevo ----------
-function crearReglas() {
-  if (ss().getSheetByName('Reglas')) return;
-  var sh = ss().insertSheet('Reglas');
-  sh.getRange(1, 1, 1, REGLAS_HEADERS.length).setValues([REGLAS_HEADERS]).setFontWeight('bold').setBackground('#1C1B19').setFontColor('#FFFFFF');
-  sh.getRange(2, 1, 1, 5).setValues([['Ejemplo: éxito', 'Alimentación', 'Supermercado', 'Gasto', 'No']]);
+function crearPestana(name, headers) {
+  var sh = ss().getSheetByName(name);
+  if (sh) return null;
+  sh = ss().insertSheet(name);
+  sh.getRange(1, 1, 1, headers.length).setValues([headers]).setFontWeight('bold').setBackground('#1C1B19').setFontColor('#FFFFFF');
   sh.setFrozenRows(1);
+  return sh;
+}
+
+function crearReglas() {
+  var sh = crearPestana('Reglas', REGLAS_HEADERS);
+  if (sh) sh.getRange(2, 1, 1, 5).setValues([['Ejemplo: éxito', 'Alimentación', 'Supermercado', 'Gasto', 'No']]);
 }
 
 function asegurarAjuste(nombre, valor, nota) {
