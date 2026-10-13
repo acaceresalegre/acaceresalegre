@@ -1122,10 +1122,15 @@
       if (form) {
         form.onsubmit = (e) => {
           e.preventDefault();
-          const url = form.url.value.trim();
-          const token = form.token.value.trim();
-          if (!/^https:\/\/script\.google\.com\//.test(url) || !token) return toast('Revisá la dirección (script.google.com/…/exec) y el código', 'red');
-          connect(url, token, form.quien.value);
+          const raw = form.url.value.replace(/\s+/g, '');
+          // También se puede pegar el enlace de conexión completo que arma la planilla.
+          const pasted = raw.includes('#conectar=') ? L.parseConnectHash(raw.slice(raw.indexOf('#'))) : null;
+          const url = pasted ? pasted.url : raw;
+          const token = pasted ? pasted.token : form.token.value.trim();
+          if (!url) return toast('Pegá la dirección de la aplicación web (termina en /exec)', 'red');
+          if (!/^https:\/\/script\.google\.com\/.+\/exec$/.test(url)) return toast('La dirección tiene que empezar con https://script.google.com/ y terminar en /exec', 'red');
+          if (!token) return toast('Falta el código de acceso', 'red');
+          connect(url, token, (pasted && pasted.user) || form.quien.value);
         };
         form.querySelectorAll('input[name="quien"]').forEach((radio) => {
           radio.onchange = () => form.querySelectorAll('label.pill').forEach((l) => l.classList.toggle('on', l.contains(form.querySelector('input[name="quien"]:checked'))));
@@ -1169,7 +1174,7 @@
     return `<div class="card">
         <p class="lead" style="margin:0 0 10px">Conectá la app a la planilla para compartir los datos entre los dos. Lo más simple es abrir el enlace de «Cuentas Casa → 2. Conectar la app» en la planilla.</p>
         <form id="sync-form">
-          <input class="input" name="url" placeholder="https://script.google.com/…/exec" autocomplete="off">
+          <input class="input" name="url" placeholder="Enlace de conexión o https://script.google.com/…/exec" autocomplete="off">
           <input class="input" name="token" placeholder="Código de acceso" autocomplete="off" style="margin-top:8px">
           <div class="two" style="margin-top:8px">
             <label class="pill on" style="text-align:center"><input type="radio" name="quien" value="Alan" checked hidden> Alan</label>
@@ -1383,13 +1388,21 @@
   showOverdueNotice();
 
   // Enlace de conexión generado desde la planilla (Cuentas Casa → Conectar la app).
-  const link = L.parseConnectHash(location.hash);
-  if (link) {
+  // Se lee al abrir y también cuando cambia el #: si la app ya estaba abierta, el enlace no recarga la página.
+  function handleConnectLink() {
+    if (!/conectar=/.test(location.hash)) return false;
+    const link = L.parseConnectHash(location.hash);
     history.replaceState(null, '', location.pathname + location.search);
+    if (!link) {
+      toast('El enlace de conexión está incompleto. Volvé a copiarlo desde la planilla.', 'red');
+      return true;
+    }
+    closeSheet();
     connect(link.url, link.token, link.user);
-  } else if (isSynced()) {
-    poll();
+    return true;
   }
+  window.addEventListener('hashchange', handleConnectLink);
+  if (!handleConnectLink() && isSynced()) poll();
   setInterval(poll, POLL_MS);
   document.addEventListener('visibilitychange', poll);
   window.addEventListener('online', poll);
