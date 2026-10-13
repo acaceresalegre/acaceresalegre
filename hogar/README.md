@@ -14,6 +14,8 @@ Moneda base COP, con ARS y USD para cargar y visualizar.
 - **Deudas**: hipotecas y préstamos con su cuota mensual, estado, saldo y avance.
 - **+**: agregar gasto, ingreso o factura (con repetición mensual y recordatorios), mostrando el impacto en el presupuesto antes de guardar.
 - **Escanear**: foto de un ticket o factura → lee comercio, total y fecha y abre el formulario ya completo para revisar.
+- **Computadora** (pantallas de 1024 px o más): menú lateral y pestaña **Resumen** con indicadores del mes (ahorro, ingresos, gastos, tasa de ahorro y presupuesto usado, comparados con el mes anterior), gráficos de ingresos y gastos de los últimos 12 meses, gasto acumulado contra presupuesto con proyección de cierre y gasto por categoría, más vencimientos y alertas. Los gráficos muestran los valores al pasar el mouse.
+- **Movimientos**: lista completa con búsqueda, filtros (período, tipo, categoría, medio de pago), orden por fecha o importe, totales, edición y exportación a CSV de lo filtrado.
 - **⋯ Ajustes**: umbral de alertas, tasas de cambio, categorías, calendario, importar/exportar y datos.
 
 ## Cómo usarla
@@ -69,6 +71,7 @@ Excel y OCR descargan su librería la primera vez que se usan, así que necesita
 | `styles.css` | Tokens y estilos del diseño (Figtree, paleta cálida) |
 | `lib.js` | Reglas de negocio puras: conversión, vencimientos, presupuesto, proyección, alertas, ICS, CSV, importación, lectura de tickets |
 | `app.js` | Pantallas, hojas inferiores, interacciones y sincronización |
+| `charts.js` | Gráficos del dashboard en SVG (sin librerías) |
 | `apps-script/Codigo.gs` | Programa de la planilla: API para la app, facturas de cada mes y Google Calendar |
 | `tests/` | Tests de las reglas de negocio y del programa de la planilla (sobre una planilla simulada, `fake-gas.js`) |
 

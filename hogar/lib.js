@@ -196,6 +196,71 @@
     return { income, expense, pending, balance: income - expense, remaining: income - expense - pending, hasData: income + expense > 0 };
   }
 
+  // ---------- Dashboard ----------
+  // Ingresos y gastos (COP) de los n meses que terminan en endKey.
+  function monthSeries(state, endKey, n = 12) {
+    const out = [];
+    for (let i = n - 1; i >= 0; i--) {
+      const key = addMonths(endKey, -i);
+      const s = monthSummary(state, key);
+      out.push({ key, income: s.income, expense: s.expense, hasData: s.hasData });
+    }
+    return out;
+  }
+
+  // Gasto acumulado por día del mes (movimientos + facturas pagadas), presupuesto y proyección de cierre.
+  function dailySpend(state, key, today) {
+    const rates = state.settings.rates;
+    const dim = daysInMonth(key);
+    const daily = Array(dim).fill(0);
+    let variable = 0;
+    for (const m of state.movements) {
+      if (m.type !== 'exp' || monthKey(m.date) !== key) continue;
+      const v = toCOP(m, rates);
+      daily[dayOf(m.date) - 1] += v;
+      variable += v;
+    }
+    let billsTotal = 0;
+    for (const b of state.bills) {
+      if (monthKey(b.due) !== key) continue;
+      const v = toCOP(b, rates);
+      billsTotal += v;
+      if (b.paid) daily[dayOf(b.due) - 1] += v;
+    }
+    const cumulative = [];
+    daily.reduce((acc, v, i) => (cumulative[i] = acc + v), 0);
+    const elapsed = elapsedDays(key, today);
+    const projection = (elapsed ? (variable / elapsed) * dim : 0) + billsTotal;
+    const budget = state.categories.reduce((s, c) => s + (Number(c.limit) || 0), 0);
+    return { dim, daily, cumulative, elapsed, budget, projection };
+  }
+
+  // Movimientos filtrados y ordenados para la tabla completa.
+  function filterMovements(state, f, today) {
+    const q = norm(f.q || '');
+    const key = f.month || monthKey(today);
+    const from = { month: key, '3m': addMonths(key, -2), year: key.slice(0, 4) + '-01', all: '0000-00' }[f.period || 'month'];
+    const to = f.period === 'all' ? '9999-99' : key;
+    const list = state.movements.filter((m) => {
+      const k = monthKey(m.date);
+      if (k < from || k > to) return false;
+      if (f.type && f.type !== 'all' && m.type !== f.type) return false;
+      if (f.cat && m.cat !== f.cat) return false;
+      if (f.method && m.method !== f.method) return false;
+      if (q && !norm([m.note, m.cat, m.sub, m.method].join(' ')).includes(q)) return false;
+      return true;
+    });
+    const dir = f.dir === 'asc' ? 1 : -1;
+    const rates = state.settings.rates;
+    list.sort((a, b) => {
+      const d = f.sort === 'amount' ? toCOP(a, rates) - toCOP(b, rates) : a.date.localeCompare(b.date);
+      return d * dir || a.id.localeCompare(b.id) * dir;
+    });
+    const income = list.filter((m) => m.type === 'inc').reduce((s, m) => s + toCOP(m, rates), 0);
+    const expense = list.filter((m) => m.type === 'exp').reduce((s, m) => s + toCOP(m, rates), 0);
+    return { list, income, expense, net: income - expense };
+  }
+
   // ---------- Alertas ----------
   function buildAlerts(state, today) {
     const key = monthKey(today);
@@ -667,7 +732,7 @@
     monthName, monthLabel, shortDate, longDate, uid, MONTHS, MON,
     CURRENCIES, convert, formatMoney, formatShort, cleanDigits, groupDigits, toCOP,
     ensureRecurring, dueInfo, isUrgent, groupBills, dayDot, calendarCells,
-    elapsedDays, categoryStats, monthSummary, buildAlerts,
+    elapsedDays, categoryStats, monthSummary, buildAlerts, monthSeries, dailySpend, filterMovements,
     toICS, toCSV, parseMovementRows, parseNumber, cellToISO, parseReceipt,
     baseState, sampleState, normalizeState, clearSamples,
   };

@@ -236,3 +236,51 @@ test('parseConnectHash solo acepta direcciones de Apps Script', () => {
   assert.equal(L.parseConnectHash('#conectar=https%3A%2F%2Fevil.com%2Fx&token=t1'), null);
   assert.equal(L.parseConnectHash(''), null);
 });
+
+// ---------- Dashboard ----------
+function dashState() {
+  const s = L.baseState(TODAY);
+  s.recurring = []; s.loans = [];
+  s.categories = [{ name: 'Ocio', limit: 3100, subs: [] }, { name: 'Salud', limit: 0, subs: [] }];
+  s.movements = [
+    { id: 'a', type: 'inc', cat: 'Sueldo Alan', date: '2026-10-01', amount: 10000, cur: 'COP', note: 'Sueldo' },
+    { id: 'b', type: 'exp', cat: 'Ocio', sub: 'Bares', date: '2026-10-02', amount: 600, cur: 'COP', note: 'Cena', method: 'Efectivo' },
+    { id: 'c', type: 'exp', cat: 'Ocio', sub: 'Cine', date: '2026-10-05', amount: 600, cur: 'COP', note: 'Película', method: 'Tarjeta Crédito' },
+    { id: 'd', type: 'exp', cat: 'Salud', date: '2026-09-20', amount: 1, cur: 'USD', note: 'Farmacia', method: 'Efectivo' },
+  ];
+  s.bills = [
+    { id: 'f1', cat: 'Salud', due: '2026-10-03', amount: 300, cur: 'COP', paid: true },
+    { id: 'f2', cat: 'Salud', due: '2026-10-20', amount: 200, cur: 'COP', paid: false },
+  ];
+  return s;
+}
+
+test('monthSeries devuelve ingresos y gastos de los últimos meses', () => {
+  const series = L.monthSeries(dashState(), '2026-10', 3);
+  assert.deepEqual(series.map((m) => m.key), ['2026-08', '2026-09', '2026-10']);
+  assert.equal(series[0].hasData, false);
+  assert.equal(series[1].expense, 3194.44);
+  assert.deepEqual([series[2].income, series[2].expense], [10000, 1500]);
+});
+
+test('dailySpend acumula por día y proyecta el cierre', () => {
+  const d = L.dailySpend(dashState(), '2026-10', TODAY);
+  assert.equal(d.dim, 31);
+  assert.deepEqual(d.cumulative.slice(0, 5), [0, 600, 900, 900, 1500]);
+  assert.equal(d.cumulative[30], 1500);
+  assert.equal(d.elapsed, 12);
+  assert.equal(d.budget, 3100);
+  // 1200 / 12 * 31 + facturas del mes (300 + 200)
+  assert.equal(d.projection, 3600);
+});
+
+test('filterMovements filtra por período, tipo, búsqueda y ordena', () => {
+  const s = dashState();
+  const mes = L.filterMovements(s, { period: 'month' }, TODAY);
+  assert.deepEqual(mes.list.map((m) => m.id), ['c', 'b', 'a']);
+  assert.deepEqual([mes.income, mes.expense, mes.net], [10000, 1200, 8800]);
+  assert.deepEqual(L.filterMovements(s, { period: '3m', type: 'exp', sort: 'amount', dir: 'desc' }, TODAY).list.map((m) => m.id), ['d', 'c', 'b']);
+  assert.deepEqual(L.filterMovements(s, { period: 'all', q: 'pelicula' }, TODAY).list.map((m) => m.id), ['c']);
+  assert.deepEqual(L.filterMovements(s, { period: 'all', method: 'Efectivo' }, TODAY).list.map((m) => m.id), ['b', 'd']);
+  assert.deepEqual(L.filterMovements(s, { period: 'month', month: '2026-09' }, TODAY).list.map((m) => m.id), ['d']);
+});
