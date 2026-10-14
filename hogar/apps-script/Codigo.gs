@@ -43,8 +43,24 @@ var TABLES = {
     softDelete: { column: 'Activa', value: 'No' },
     headers: ['ID', 'Nombre', 'Monto objetivo', 'Moneda', 'Fecha objetivo', 'Ahorro inicial', 'Activa', 'Comentarios', 'Actualizado'],
   },
+  'Cuentas y bienes': {
+    key: ['ID'], dates: [], optional: true,
+    text: ['ID', 'Nombre', 'Tipo', 'Moneda', 'Activa', 'Comentarios'],
+    softDelete: { column: 'Activa', value: 'No' },
+    headers: ['ID', 'Nombre', 'Tipo', 'Moneda', 'Activa', 'Comentarios', 'Actualizado'],
+  },
+  // Saldo de cierre de cada cuenta o bien por mes (Mes = día 1 del mes).
+  'Saldos': {
+    key: ['Cuenta ID', 'Mes'], dates: ['Mes'], optional: true,
+    text: ['Cuenta ID', 'Cuenta', 'Moneda'],
+    headers: ['Cuenta ID', 'Cuenta', 'Mes', 'Moneda', 'Saldo', 'Actualizado'],
+  },
+  // Solo lectura y recortada a una ventana de meses (ver pullPayload): amortización, interés y saldo de cada cuota.
+  'Cuotas': { readOnly: true, dates: ['Vencimiento'], optional: true },
 };
-var PULL_TABLES = ['Movimientos', 'Facturas', 'Recurrentes', 'Por cobrar', 'Categorías', 'Ajustes', 'Deudas', 'Presupuesto', 'Listas', 'Reglas', 'Metas'];
+var PULL_TABLES = ['Movimientos', 'Facturas', 'Recurrentes', 'Por cobrar', 'Categorías', 'Ajustes', 'Deudas', 'Presupuesto', 'Listas', 'Reglas', 'Metas', 'Cuentas y bienes', 'Saldos', 'Cuotas'];
+var CUOTAS_MESES_ATRAS = 25;
+var CUOTAS_MESES_ADELANTE = 13;
 var REGLAS_HEADERS = ['Contiene', 'Categoría', 'Subcategoría', 'Tipo', 'Activa'];
 
 // ---------- Entrada web ----------
@@ -96,6 +112,15 @@ function pullPayload() {
   PULL_TABLES.forEach(function (name) {
     if (TABLES[name].optional && !ss().getSheetByName(name)) { tables[name] = []; return; }
     tables[name] = readTable(name).rows;
+    if (name === 'Cuotas') {
+      var hoy = monthKeyOf(todayIso());
+      var desde = addMonthsKey(hoy, -CUOTAS_MESES_ATRAS);
+      var hasta = addMonthsKey(hoy, CUOTAS_MESES_ADELANTE);
+      tables[name] = tables[name].filter(function (c) {
+        var k = String(c['Vencimiento'] || '').slice(0, 7);
+        return c['ID préstamo'] && k >= desde && k <= hasta;
+      });
+    }
   });
   return { ok: true, version: getVersion(), tables: tables };
 }
@@ -469,6 +494,8 @@ function instalar() {
   ensureHeaders('Movimientos', ['Pagó', 'Meta ID']);
   crearReglas();
   crearPestana('Metas', TABLES['Metas'].headers);
+  crearPestana('Cuentas y bienes', TABLES['Cuentas y bienes'].headers);
+  crearPestana('Saldos', TABLES['Saldos'].headers);
   asegurarAjuste('Correos del resumen', Session.getEffectiveUser().getEmail(),
     'Separados por coma. Reciben el cierre preliminar (' + DIAS_ANTES_CIERRE + ' días antes de fin de mes) y el resumen (día 1).');
   ScriptApp.getProjectTriggers().forEach(function (tr) {
@@ -698,6 +725,19 @@ function umbral() {
   return v > 0 ? Math.round(v <= 1 ? v * 100 : v) : 80;
 }
 
+// Recordatorio para cargar el saldo de cierre de cada cuenta (lo usan el balance y el flujo de efectivo).
+function saldosPendientes(key) {
+  if (!ss().getSheetByName('Cuentas y bienes') || !ss().getSheetByName('Saldos')) return '';
+  var cuentas = readTable('Cuentas y bienes').rows.filter(function (c) { return c['ID'] && c['Activa'] !== 'No'; });
+  if (!cuentas.length) return '';
+  var cargadas = {};
+  readTable('Saldos').rows.forEach(function (r) { if (String(r['Mes'] || '').slice(0, 7) === key) cargadas[r['Cuenta ID']] = true; });
+  var faltan = cuentas.filter(function (c) { return !cargadas[c['ID']]; });
+  if (!faltan.length) return '';
+  return bloque('Saldos de cierre para cargar', '<p style="font-size:14px;margin:0 0 6px">El último día del mes cargá en la app (Balance → Actualizar saldos) el saldo de: ' +
+    faltan.map(function (c) { return '<b>' + h(c['Nombre']) + '</b>'; }).join(', ') + '.</p>');
+}
+
 function htmlCierrePreliminar(key) {
   var d = datosMes(key);
   var revisar = paraRevisar(d);
@@ -712,6 +752,7 @@ function htmlCierrePreliminar(key) {
     bloque('Movimientos para revisar', tabla(['Movimiento', 'Fecha', 'Importe', 'Motivo'],
       revisar.map(function (r) { return [h(r.m['Comentarios'] || r.m['Subcategoría'] || etiqueta(r.m['Categoría'])), h(fechaCorta(r.m['Fecha'])), h(money(r.m['Importe'], r.m['Moneda'])), h(r.motivos.join(', '))]; }))) +
     bloque('Categorías excedidas o cerca del límite (' + umbral() + '% o más)', tabla(['Categoría', 'Gastado', 'Presupuesto', 'Usado'], filaCategorias(d, true))) +
+    saldosPendientes(key) +
     bloque('Vence en los primeros días de ' + nombreMes(sig), tabla(['Factura', 'Vence', 'Importe'],
       proximos.map(function (b) { return [h(b['Nombre']), h(fechaCorta(b['Vence'])), h(money(b['Importe'], b['Moneda']))]; })));
   return { asunto: 'Cuentas Casa · Cierre preliminar de ' + nombreMes(key), html: marco('Cierre preliminar de ' + nombreMes(key), cuerpo) };
