@@ -409,3 +409,100 @@ test('metas: vuelven a la planilla y una meta borrada se manda a borrar', () => 
   assert.deepEqual(L.diffRows(before, L.stateToRows(s)).filter((o) => o.table === 'Metas').map((o) => o.op), ['delete']);
   assert.match(L.toCSV(s), /"Ahorro";"Viaje"/);
 });
+
+// ---------- Balance ----------
+const conBalance = () => ({
+  ...TABLES,
+  'Movimientos': [
+    { ID: 'M1', Fecha: '2026-09-02', Tipo: 'Ingreso', 'Categoría': 'Ingresos', 'Subcategoría': 'Sueldo Alan', Moneda: 'COP', Importe: 9000000 },
+    { ID: 'M2', Fecha: '2026-09-05', Tipo: 'Gasto', 'Categoría': 'Gastos_Fijos', 'Subcategoría': 'Luz', Moneda: 'COP', Importe: 200000 },
+    { ID: 'M3', Fecha: '2026-09-20', Tipo: 'Ingreso', 'Categoría': 'Ingresos', 'Subcategoría': 'Sueldo Karo', Moneda: 'COP', Importe: 1000000, Comentarios: 'Cobro Clínica' },
+    { ID: 'A1', Fecha: '2026-09-21', Tipo: 'Ahorro', 'Categoría': 'Ahorro', 'Subcategoría': 'Viaje', 'Meta ID': 'G1', Moneda: 'COP', Importe: 500000 },
+  ],
+  'Facturas': [
+    { ID: 'F1', Nombre: 'Préstamo N°1', 'Categoría': 'Obligaciones_financieras', Moneda: 'ARS', Importe: 173736, Vence: '2026-09-10', Pagada: 'Sí', 'Fecha de pago': '2026-09-10', 'Préstamo ID': 'P1' },
+    { ID: 'F2', Nombre: 'Celular', 'Categoría': 'Gastos_Fijos', 'Subcategoría': 'Celular', Moneda: 'COP', Importe: 32000, Vence: '2026-09-29', Pagada: 'No' },
+    { ID: 'F3', Nombre: 'Internet', 'Categoría': 'Gastos_Fijos', Moneda: 'COP', Importe: 100000, Vence: '2026-09-15', Pagada: 'Sí', 'Fecha de pago': '2026-09-14' },
+  ],
+  'Por cobrar': [
+    { ID: 'C1', 'Fecha de emisión': '2026-08-25', Cliente: 'Clínica', Moneda: 'COP', Valor: 1000000, Vence: '2026-09-25', Estado: 'Cobrada', 'Fecha de cobro': '2026-09-20', 'Movimiento ID': 'M3' },
+    { ID: 'C2', 'Fecha de emisión': '2026-09-10', Cliente: 'Estudio', Moneda: 'COP', Valor: 2000000, Vence: '2026-10-10', Estado: 'Pendiente' },
+  ],
+  'Cuotas': [
+    { 'ID préstamo': 'P1', 'Préstamo': 'Préstamo N°1', 'N° cuota': 21, Vencimiento: '2026-09-10', Moneda: 'ARS', 'Amortización': 47914, 'Interés': 102369, Seguro: 23454, Diferidos: 0, Cuota: 173736, Saldo: 1871498 },
+    { 'ID préstamo': 'P1', 'Préstamo': 'Préstamo N°1', 'N° cuota': 22, Vencimiento: '2026-10-10', Moneda: 'ARS', 'Amortización': 50469, 'Interés': 99813, Seguro: 22807, Diferidos: 0, Cuota: 173089, Saldo: 1821029 },
+  ],
+  'Cuentas y bienes': [
+    { ID: 'B1', Nombre: 'Banco', Tipo: 'Cuenta bancaria', Moneda: 'COP', Activa: 'Sí' },
+    { ID: 'B2', Nombre: 'Efectivo', Tipo: 'Efectivo', Moneda: 'COP' },
+    { ID: 'B3', Nombre: 'CDT', Tipo: 'Inversión', Moneda: 'COP' },
+    { ID: 'B4', Nombre: 'Auto', Tipo: 'Vehículo', Moneda: 'COP' },
+    { ID: 'B5', Nombre: 'Vieja', Tipo: 'Cuenta bancaria', Moneda: 'COP', Activa: 'No' },
+  ],
+  'Saldos': [
+    { 'Cuenta ID': 'B1', Mes: '2026-08-01', Saldo: 3000000 }, { 'Cuenta ID': 'B2', Mes: '2026-08-01', Saldo: 200000 },
+    { 'Cuenta ID': 'B1', Mes: '2026-09-01', Saldo: 11000000 }, { 'Cuenta ID': 'B2', Mes: '2026-09-01', Saldo: 100000 },
+    { 'Cuenta ID': 'B3', Mes: '2026-07-01', Saldo: 5000000 }, { 'Cuenta ID': 'B4', Mes: '2026-09-01', Saldo: 40000000 },
+  ],
+});
+const ARS = 2.13845;
+
+test('estado de resultados devengado: facturas del mes, por cobrar al emitir y solo intereses de préstamos', () => {
+  const s = L.sheetToState(conBalance(), null, TODAY);
+  const r = L.incomeStatement(s, '2026-09');
+  assert.deepEqual(r.income.map((x) => [x.name, x.amount]), [['Sueldo Alan', 9000000], ['Facturas emitidas', 2000000]],
+    'el cobro de C1 (emitida en agosto) no vuelve a contarse');
+  assert.deepEqual(r.expense.map((x) => [x.name, x.amount]), [['Gastos fijos', 200000 + 32000 + 100000]], 'la cuota del préstamo no es gasto operativo');
+  assert.equal(r.unpaid, 32000);
+  assert.equal(r.financial.length, 1);
+  assert.ok(Math.abs(r.financial[0].interest - 102369 * ARS) < 1e-6);
+  assert.ok(Math.abs(r.financial[0].other - 23454 * ARS) < 1e-6);
+  assert.ok(Math.abs(r.principal - 47914 * ARS) < 1e-6, 'la amortización se informa aparte');
+  assert.ok(Math.abs(r.result - (11000000 - 332000 - (102369 + 23454) * ARS)) < 1e-6);
+  assert.equal(L.incomeStatement(s, '2026-08').income[0].name, 'Facturas emitidas');
+});
+
+test('situación patrimonial al cierre: cuentas, por cobrar, préstamos y facturas impagas', () => {
+  const s = L.sheetToState(conBalance(), null, TODAY);
+  assert.deepEqual(s.accounts.map((a) => a.id), ['B1', 'B2', 'B3', 'B4']);
+  const b = L.balanceSheet(s, '2026-09', TODAY);
+  assert.equal(b.assets.cash, 11100000);
+  assert.deepEqual(b.groups.invest.map((x) => [x.name, x.amount, x.stale]), [['CDT', 5000000, true]], 'usa el último saldo cargado');
+  assert.equal(b.assets.asset, 40000000);
+  assert.equal(b.assets.receivables, 2000000, 'C1 ya se cobró el 20/9; C2 sigue pendiente');
+  assert.ok(Math.abs(b.totalLoans - 1871498 * ARS) < 1e-6, 'saldo después de la cuota de septiembre');
+  assert.deepEqual(b.payables.map((x) => x.name), ['Celular']);
+  assert.ok(Math.abs(b.netWorth - (11100000 + 5000000 + 2000000 + 40000000 - 1871498 * ARS - 32000)) < 1e-6);
+  const ago = L.balanceSheet(s, '2026-08', TODAY);
+  assert.equal(ago.assets.receivables, 1000000);
+  assert.ok(Math.abs(ago.totalLoans - (1871498 + 47914) * ARS) < 1e-6, 'antes de la primera cuota de la ventana');
+  assert.deepEqual(ago.missing.map((a) => a.id), ['B4']);
+});
+
+test('flujo de efectivo: variación de las cuentas contra lo registrado', () => {
+  const s = L.sheetToState(conBalance(), null, TODAY);
+  const f = L.cashFlow(s, '2026-09');
+  assert.equal(f.complete, true);
+  assert.equal(f.opening, 3200000);
+  assert.equal(f.closing, 11100000);
+  assert.equal(f.receipts, 10000000, 'cobros en caja, incluido el de la factura emitida');
+  assert.equal(f.spending, 300000, 'gastos más facturas pagadas en el mes (no la impaga)');
+  assert.ok(Math.abs(f.loanPayments - 173736 * ARS) < 1e-6);
+  assert.ok(Math.abs(f.unexplained - (7900000 - (10000000 - 300000 - 173736 * ARS))) < 1e-6);
+  assert.equal(L.cashFlow(s, '2026-10').complete, false);
+});
+
+test('cuentas y saldos vuelven a la planilla', () => {
+  const s = L.sheetToState(conBalance(), null, TODAY);
+  const before = L.stateToRows(s);
+  assert.deepEqual(L.diffRows(before, L.stateToRows(s)), []);
+  assert.deepEqual(before['Saldos'][2], { 'Cuenta ID': 'B1', Cuenta: 'Banco', Mes: '2026-09-01', Moneda: 'COP', Saldo: 11000000 });
+  s.balances.push({ accountId: 'B1', month: '2026-10', amount: 9000000 });
+  s.balances.find((b) => b.accountId === 'B2' && b.month === '2026-09').amount = 150000;
+  assert.deepEqual(L.diffRows(before, L.stateToRows(s)).map((o) => [o.table, o.op, o.row['Cuenta ID'], o.row.Mes, o.row.Saldo]), [
+    ['Saldos', 'upsert', 'B2', '2026-09-01', 150000], ['Saldos', 'upsert', 'B1', '2026-10-01', 9000000]]);
+  s.accounts = s.accounts.filter((a) => a.id !== 'B4');
+  const ops = L.diffRows(before, L.stateToRows(s));
+  assert.deepEqual(ops.filter((o) => o.table === 'Cuentas y bienes').map((o) => [o.op, o.row.ID]), [['delete', 'B4']]);
+  assert.equal(ops.filter((o) => o.table === 'Saldos' && o.op === 'delete').length, 0, 'los saldos de una cuenta quitada no se borran');
+});

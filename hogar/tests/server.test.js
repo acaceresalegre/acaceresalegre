@@ -58,7 +58,9 @@ test('pull devuelve las pestañas con fechas como texto', () => {
     Moneda: 'COP', Importe: 250000, 'Medio de pago': 'Efectivo', Entidad: 'Davivienda', Comentarios: 'Compra',
   });
   assert.equal(res.tables['Presupuesto'][0]['Mes'], '2025-10-01');
-  assert.equal(res.tables['Cuotas'], undefined);
+  // Cuotas: solo las de la ventana de meses alrededor de hoy.
+  assert.deepEqual(res.tables['Cuotas'].map((c) => [c['ID préstamo'], c['Vencimiento']]),
+    [['H1', '2026-10-08'], ['H1', '2026-11-07'], ['P4', '2026-11-30']]);
 });
 
 test('upsert agrega filas nuevas y actualiza solo las columnas enviadas', () => {
@@ -267,4 +269,27 @@ test('metas: la pestaña se crea al guardar la primera y los aportes no son gast
   assert.match(html, /Aportado a metas en el mes: <b>\$ 300\.000/);
   assert.match(html, /Gastos<\/div><div[^>]*>\$ 250\.000/, 'el aporte no suma a gastos');
   assert.match(html, /Vacaciones.*\$ 400\.000.*\$ 1\.000\.000.*40%/);
+});
+
+test('balance: cuentas y saldos se crean solos y el cierre recuerda cargar saldos', () => {
+  const p = planilla();
+  p['Ajustes'].push(['Correos del resumen', 'alan@example.com', '']);
+  p['Cuotas'].push(['H1', 'Hipoteca N°1', 1, D('2023-07-08'), 'COP', 1, 1, 1, 1, 1, 1, 'Sí']);
+  let now = D('2026-10-12');
+  const gas = createGas(p, { now: () => now });
+  gas.post({ token: 'secreto', ops: [
+    { table: 'Cuentas y bienes', op: 'upsert', row: { ID: 'B1', Nombre: 'Banco', Tipo: 'Cuenta bancaria', Moneda: 'COP', Activa: 'Sí' } },
+    { table: 'Cuentas y bienes', op: 'upsert', row: { ID: 'B2', Nombre: 'Efectivo', Tipo: 'Efectivo', Moneda: 'COP', Activa: 'Sí' } },
+    { table: 'Saldos', op: 'upsert', row: { 'Cuenta ID': 'B1', Cuenta: 'Banco', Mes: '2026-10-01', Moneda: 'COP', Saldo: 5000000 } },
+  ] });
+  gas.post({ token: 'secreto', ops: [{ table: 'Saldos', op: 'upsert', row: { 'Cuenta ID': 'B1', Mes: '2026-10-01', Saldo: 5100000 } }] });
+  assert.equal(rowsOf(gas, 'Saldos').length, 1, 'mismo mes y cuenta: se actualiza la fila');
+  assert.equal(rowsOf(gas, 'Saldos')[0][4], 5100000);
+  const t = gas.get({ token: 'secreto', action: 'pull' }).tables;
+  assert.equal(t['Saldos'][0]['Mes'], '2026-10-01');
+  assert.ok(!t['Cuotas'].some((c) => c['Vencimiento'] === '2023-07-08'), 'las cuotas viejas no se mandan');
+  now = D('2026-10-27');
+  gas.run('tareaDiaria');
+  assert.match(gas.mails[0].htmlBody, /Saldos de cierre para cargar.*<b>Efectivo<\/b>/);
+  assert.doesNotMatch(gas.mails[0].htmlBody, /<b>Banco<\/b>/);
 });

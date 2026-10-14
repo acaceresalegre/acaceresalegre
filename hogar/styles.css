@@ -455,3 +455,24 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 14px; }
 .goal-amt b { font-size: 22px; color: var(--ink); font-weight: 800; }
 .goal-lines { display: flex; flex-direction: column; gap: 3px; margin-top: 10px; font-size: 12.5px; color: var(--ink-2); }
 .goal-card > .pill { align-self: flex-start; }
+
+/* Balance: estados con filas de concepto e importe */
+.stmt .st-head { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; color: var(--ink-2); margin: 16px 0 4px; }
+.stmt .st-sub { font-size: 12.5px; font-weight: 600; color: var(--ink-2); margin: 8px 0 2px 12px; }
+.stmt .st-row { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; padding: 7px 0; font-size: 14px; border-bottom: 1px solid var(--line); }
+.stmt .st-row > span { min-width: 0; }
+.stmt .st-row b { font-weight: 600; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.stmt .st-row small { color: var(--ink-2); font-weight: 500; font-size: 12px; margin-left: 4px; }
+.stmt .st-row.ind > span { padding-left: 12px; }
+.stmt .st-row.sub { font-weight: 700; }
+.stmt .st-row.sub b { font-weight: 800; }
+.stmt .st-row.total { border-bottom: 0; border-top: 2px solid var(--ink); margin-top: 8px; padding-top: 10px; font-size: 16px; font-weight: 800; }
+.stmt .st-row.total b { font-weight: 800; font-size: 18px; }
+.stmt .st-row.muted { color: var(--ink-2); font-size: 13px; }
+.stmt .st-row .link { padding: 0; font: inherit; text-align: left; color: var(--ink); text-decoration: underline dotted var(--ink-2); text-underline-offset: 3px; }
+.stmt .st-note { margin-top: 12px; font-size: 12.5px; line-height: 1.5; color: var(--ink-2); }
+.stmt .st-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; align-items: center; }
+.stmt .st-actions .primary { width: auto; height: 44px; margin: 0; padding: 0 18px; font-size: 14px; }
+.amount-row.small { padding: 6px 12px; border-radius: 14px; }
+.amount-row.small .cur { font-size: 16px; }
+.amount-row.small input { font-size: 22px; }

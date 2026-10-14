@@ -39,6 +39,7 @@ Igual nadie puede leer ni escribir sin el código de acceso secreto que se crea 
    - se corrige la tasa ARS de la pestaña Ajustes (había quedado en 2,14);
    - se agrega la columna **Pagó** en Movimientos, la pestaña **Reglas** y el ajuste **Correos del resumen**;
    - se agrega la columna **Meta ID** en Movimientos y la pestaña **Metas** (si no, se crean solas al guardar la primera meta);
+   - se agregan las pestañas **Cuentas y bienes** y **Saldos** para el balance (también se crean solas al usarlas);
    - se programan los mails de cierre (todos los días a las 8 revisa si corresponde mandar alguno).
 
 La versión con mails pide un permiso más: **enviar correo como vos**. Es para mandar el cierre del mes.

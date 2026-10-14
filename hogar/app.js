@@ -42,6 +42,8 @@
     budMode: 'month',
     yearSel: null,
     dashMonth: null, // mes del dashboard (null = mes actual)
+    balMonth: null, // mes del balance (null = mes anterior, el último cerrado)
+    balView: 'res', // en el celular: res | pat | flujo
     mov: { q: '', period: 'month', month: null, type: 'all', cat: '', method: '', person: '', sort: 'date', dir: 'desc', limit: 100 },
     sheet: null, // { render, mount }
   };
@@ -557,7 +559,7 @@
 
   // ---------- Pantalla: Metas ----------
   // En el celular Metas y Deudas comparten la pestaña «Patrimonio».
-  const patSeg = () => (isDesktop() ? '' : `<div class="seg wide" style="margin-bottom:14px">${[['metas', 'Metas'], ['deudas', 'Deudas']]
+  const patSeg = () => (isDesktop() ? '' : `<div class="seg wide" style="margin-bottom:14px">${[['metas', 'Metas'], ['deudas', 'Deudas'], ['balance', 'Balance']]
     .map(([v, l]) => `<button class="${ui.tab === v ? 'on' : ''}" data-act="tab" data-v="${v}">${l}</button>`).join('')}</div>`);
   const GOAL_CHIP = {
     done: '<span class="chip green">Cumplida</span>', ok: '<span class="chip green">Al día</span>',
@@ -689,6 +691,186 @@
     toast(g ? 'Meta actualizada' : `Meta «${data.name}» creada`, 'green');
     goalForm = null;
     closeSheet();
+    save();
+  }
+
+  // ---------- Pantalla: Balance ----------
+  const balKey = () => ui.balMonth || L.addMonths(curMonth, -1);
+  const line = (label, amount, cls = '', extra = '') =>
+    `<div class="st-row ${cls}"><span>${label}</span><b class="num">${amount == null ? '—' : esc(money(amount))}${extra}</b></div>`;
+  const neg = (v) => -v;
+
+  function resultsCard(key) {
+    const r = L.incomeStatement(state, key);
+    const prev = L.incomeStatement(state, L.addMonths(key, -1));
+    return `<div class="card r20 stmt">
+      <div class="sec-head"><h2>Estado de resultados</h2><span class="chip">${esc(cap(L.monthLabel(key)))}</span></div>
+      <div class="st-head">Ingresos</div>
+      ${r.income.map((x) => line(esc(x.name), x.amount, 'ind')).join('') || '<div class="st-row ind"><span>Sin ingresos</span><b>—</b></div>'}
+      ${line('Total ingresos', r.totalIncome, 'sub')}
+      <div class="st-head">Gastos</div>
+      ${r.expense.map((x) => line(esc(x.name), neg(x.amount), 'ind')).join('') || '<div class="st-row ind"><span>Sin gastos</span><b>—</b></div>'}
+      ${line('Total gastos', neg(r.totalExpense), 'sub')}
+      ${r.financial.length ? `<div class="st-head">Gastos financieros</div>
+        ${r.financial.map((x) => line(`${esc(x.name)} <small>interés${x.other ? ' + seguros' : ''}</small>`, neg(x.interest + x.other), 'ind')).join('')}
+        ${line('Total financieros', neg(r.totalFinancial), 'sub')}` : ''}
+      ${line(`Resultado del mes${r.margin != null ? ` <small>${pctTxt(r.margin)} de los ingresos</small>` : ''}`, r.result, 'total ' + (r.result < 0 ? 'tone-red' : ''))}
+      <div class="st-note">Mes anterior: ${esc(money(prev.result))}.
+        ${r.unpaid ? `Incluye ${esc(money(r.unpaid))} de facturas del mes todavía sin pagar. ` : ''}
+        ${r.principal ? `La amortización de préstamos del mes (${esc(money(r.principal))}) baja la deuda: no es gasto.` : ''}
+        Los aportes a metas tampoco son gasto.</div>
+    </div>`;
+  }
+
+  function patrimonyCard(key) {
+    const b = L.balanceSheet(state, key, today);
+    const prev = L.balanceSheet(state, L.addMonths(key, -1), today);
+    const acc = (x) => line(`<button class="link" data-act="account" data-id="${esc(x.id)}">${esc(x.name)}</button>${x.stale ? ` <small>saldo de ${esc(L.MON[Number(x.month.slice(5, 7)) - 1])} ${x.month.slice(0, 4)}</small>` : ''}`, x.amount, 'ind');
+    const diff = b.netWorth - prev.netWorth;
+    const hasAccounts = (state.accounts || []).length > 0;
+    return `<div class="card r20 stmt">
+      <div class="sec-head"><h2>Situación patrimonial</h2><span class="chip">al ${L.dayOf(L.dateInMonth(key, 31))} ${esc(L.MON[Number(key.slice(5, 7)) - 1])}</span></div>
+      <div class="st-head">Activos</div>
+      ${b.groups.cash.length ? `<div class="st-sub">Disponible</div>${b.groups.cash.map(acc).join('')}` : ''}
+      ${b.groups.invest.length ? `<div class="st-sub">Inversiones</div>${b.groups.invest.map(acc).join('')}` : ''}
+      ${b.receivables.length ? line(`Por cobrar <small>${b.receivables.length} factura${b.receivables.length > 1 ? 's' : ''}</small>`, b.assets.receivables, 'ind') : ''}
+      ${b.groups.asset.length ? `<div class="st-sub">Bienes</div>${b.groups.asset.map(acc).join('')}` : ''}
+      ${b.missing.length ? `<div class="st-row ind muted"><span>Sin saldo: ${b.missing.map((a) => esc(a.name)).join(', ')}</span><b>—</b></div>` : ''}
+      ${line('Total activos', b.totalAssets, 'sub')}
+      <div class="st-head">Pasivos</div>
+      ${b.loans.map((x) => line(esc(x.name), neg(x.amount), 'ind')).join('')}
+      ${b.noData.length ? `<div class="st-row ind muted"><span>Sin datos de saldo: ${esc(b.noData.join(', '))}</span><b>—</b></div>` : ''}
+      ${b.payables.length ? line(`Facturas impagas <small>${b.payables.length}</small>`, neg(b.totalPayables), 'ind') : ''}
+      ${line('Total pasivos', neg(b.totalLiabilities), 'sub')}
+      ${line('Patrimonio neto', b.netWorth, 'total ' + (b.netWorth < 0 ? 'tone-red' : ''))}
+      <div class="st-note">${!hasAccounts ? 'Cargá tus cuentas y bienes para completar los activos. '
+        : prev.missing.length ? `Sin comparación con ${esc(L.monthName(L.addMonths(key, -1)))}: faltaban saldos de ${prev.missing.map((a) => esc(a.name)).join(', ')}. `
+          : `Variación contra el mes anterior: <b class="${diff < 0 ? 'tone-red' : 'tone-green'}">${diff >= 0 ? '+' : ''}${esc(money(diff))}</b>. `}
+        Préstamos según la tabla de cuotas; montos en ${esc(dc())} al tipo de cambio actual.</div>
+      <div class="st-actions">
+        ${hasAccounts ? `<button class="primary" data-act="balances-edit" data-v="${key}">Actualizar saldos de ${esc(L.monthName(key))}</button>` : ''}
+        <button class="pill" data-act="account-new">+ Cuenta o bien</button>
+      </div>
+    </div>`;
+  }
+
+  function flowCard(key) {
+    const f = L.cashFlow(state, key);
+    const prevKey = L.addMonths(key, -1);
+    const body = !f.hasAccounts
+      ? '<div class="empty">Agregá tus cuentas bancarias, efectivo y billeteras en Situación patrimonial para ver el flujo.</div>'
+      : `${line(`Saldo al cierre de ${esc(L.monthName(prevKey))}`, f.opening, 'sub')}
+        ${line('Cobros (ingresos registrados)', f.receipts, 'ind')}
+        ${line('Gastos pagados', neg(f.spending), 'ind')}
+        ${f.loanPayments ? line('Cuotas de préstamos pagadas', neg(f.loanPayments), 'ind') : ''}
+        ${line('Flujo registrado', f.recorded, 'sub')}
+        ${line(`Saldo al cierre de ${esc(L.monthName(key))}`, f.closing, 'sub')}
+        ${line('Variación real de las cuentas', f.change, 'ind')}
+        ${line('Diferencia sin registrar', f.unexplained, 'total ' + (Math.abs(f.unexplained) > 0.5 ? (f.unexplained < 0 ? 'tone-red' : 'tone-green') : ''))}
+        <div class="st-note">${f.complete ? (f.unexplained < 0
+          ? 'Salió más plata de la registrada: puede haber gastos sin cargar o pagos con tarjeta de crédito.'
+          : f.unexplained > 0 ? 'Entró más plata de la registrada: puede haber ingresos sin cargar.' : 'Todo lo que se movió está registrado.')
+          : `Para que el flujo cierre hacen falta los saldos de todas las cuentas líquidas al cierre de ${esc(L.monthName(prevKey))} y de ${esc(L.monthName(key))}.`}</div>`;
+    return `<div class="card r20 stmt">
+      <div class="sec-head"><h2>Flujo de efectivo</h2><span class="chip">${esc(cap(L.monthLabel(key)))}</span></div>
+      ${body}
+    </div>`;
+  }
+
+  function renderBalance() {
+    const key = balKey();
+    const nav = `<div class="filters">
+        <span class="month-nav"><button data-act="bal-month" data-v="-1" aria-label="Mes anterior">‹</button><b>${esc(L.monthLabel(key))}</b><button data-act="bal-month" data-v="1" aria-label="Mes siguiente">›</button></span>
+      </div>`;
+    if (isDesktop()) {
+      return header('Estados del hogar', 'Balance') + nav + `
+        <div class="dash bal-grid">
+          <section class="span-6">${resultsCard(key)}</section>
+          <section class="span-6 stack">${patrimonyCard(key)}${flowCard(key)}</section>
+        </div>`;
+    }
+    const views = [['res', 'Resultados'], ['pat', 'Patrimonio'], ['flujo', 'Flujo']];
+    return header('Estados del hogar', 'Balance') + patSeg() + nav + `
+      <div class="seg wide" style="margin-bottom:12px">${views.map(([v, l]) => `<button class="${ui.balView === v ? 'on' : ''}" data-act="bal-view" data-v="${v}">${l}</button>`).join('')}</div>
+      ${ui.balView === 'pat' ? patrimonyCard(key) : ui.balView === 'flujo' ? flowCard(key) : resultsCard(key)}`;
+  }
+
+  // --- Cuentas y bienes ---
+  let accForm = null;
+  function openAccountForm(id) {
+    const a = id && (state.accounts || []).find((x) => x.id === id);
+    accForm = a ? { ...a } : { id: null, name: '', kind: 'Cuenta bancaria', cur: 'COP', note: '' };
+    openSheet(() => {
+      const f = accForm;
+      return `<h3>${f.id ? 'Editar cuenta o bien' : 'Nueva cuenta o bien'}</h3>
+        <span class="field-label">Nombre</span>
+        <input class="input" id="a-name" maxlength="40" value="${esc(f.name)}" placeholder="Ej: Bancolombia ahorros, Departamento">
+        <span class="field-label">Tipo</span>
+        <div class="pills">${pills(L.ACCOUNT_KINDS.map((k) => [k, k]), (v) => v === f.kind, 'acc-kind')}</div>
+        <span class="field-label">Moneda</span>
+        <div class="pills">${pills(L.CURRENCIES.map((c) => [c, c]), (v) => v === f.cur, 'acc-cur')}</div>
+        <p class="hint" style="margin-top:12px">${L.kindClass(f.kind) === 'cash' ? 'Cuenta líquida: entra en el disponible y en el flujo de efectivo.' : L.kindClass(f.kind) === 'invest' ? 'Inversión: suma al patrimonio, no al flujo de efectivo.' : 'Bien: cargá su valor estimado; suma al patrimonio.'}</p>
+        <button class="primary" id="a-save" data-act="acc-save" ${f.name.trim() ? '' : 'disabled'}>${f.id ? 'Guardar cambios' : 'Agregar'}</button>
+        ${f.id ? `<button class="danger-link" data-act="acc-del" data-id="${esc(f.id)}">Quitar de la lista</button>` : ''}`;
+    }, (sheet) => {
+      const name = sheet.querySelector('#a-name');
+      name.oninput = () => { accForm.name = name.value; sheet.querySelector('#a-save').disabled = !name.value.trim(); };
+    });
+  }
+
+  function saveAccount() {
+    const f = accForm;
+    if (!f.name.trim()) return;
+    state.accounts = state.accounts || [];
+    const data = { name: f.name.trim(), kind: f.kind, cur: f.cur, note: f.note || '' };
+    const a = f.id && state.accounts.find((x) => x.id === f.id);
+    if (a) Object.assign(a, data); else state.accounts.push({ id: L.uid(), ...data });
+    accForm = null;
+    closeSheet();
+    toast(a ? 'Cuenta actualizada' : `«${data.name}» agregada. Cargale el saldo con «Actualizar saldos».`, 'green');
+    save();
+  }
+
+  // --- Saldos de cierre del mes ---
+  let balForm = null;
+  function openBalancesForm(key) {
+    balForm = { key, values: {} };
+    (state.accounts || []).forEach((a) => {
+      const b = (state.balances || []).find((x) => x.accountId === a.id && x.month === key);
+      balForm.values[a.id] = b ? String(Math.round(Math.abs(b.amount))) : '';
+      balForm.values[a.id + ':neg'] = Boolean(b && b.amount < 0);
+    });
+    openSheet(() => {
+      const f = balForm;
+      return `<h3>Saldos al cierre de ${esc(L.monthName(f.key))}</h3>
+        <p class="lead">Lo que había en cada cuenta el último día del mes (o el valor estimado de cada bien). Dejá vacío lo que no sepas.</p>
+        ${(state.accounts || []).map((a) => {
+          const last = L.accountBalance(state, a.id, L.addMonths(f.key, -1));
+          return `<span class="field-label">${esc(a.name)} <small class="hint">· ${esc(a.kind)}${last ? ` · antes ${esc(L.formatMoney(last.amount, a.cur))}` : ''}</small></span>
+          <div class="amount-row small"><span class="cur">${a.cur === 'COP' ? '$' : a.cur === 'ARS' ? 'AR$' : 'US$'}</span>
+            <input data-acc="${esc(a.id)}" inputmode="numeric" autocomplete="off" placeholder="0" value="${L.groupDigits(f.values[a.id])}" aria-label="Saldo de ${esc(a.name)}"></div>`;
+        }).join('')}
+        <button class="primary" data-act="bal-save">Guardar saldos</button>`;
+    }, (sheet) => {
+      sheet.querySelectorAll('input[data-acc]').forEach((el) => {
+        el.oninput = () => { balForm.values[el.dataset.acc] = L.cleanDigits(el.value); el.value = L.groupDigits(balForm.values[el.dataset.acc]); };
+      });
+    });
+  }
+
+  function saveBalances() {
+    const f = balForm;
+    state.balances = (state.balances || []).filter((b) => b.month !== f.key || !(f.key && f.values[b.accountId] !== undefined));
+    let n = 0;
+    (state.accounts || []).forEach((a) => {
+      const v = f.values[a.id];
+      if (v === '' || v === undefined) return;
+      state.balances.push({ accountId: a.id, month: f.key, amount: Number(v) * (f.values[a.id + ':neg'] ? -1 : 1) });
+      n++;
+    });
+    balForm = null;
+    closeSheet();
+    toast(`${n} saldo${n === 1 ? '' : 's'} de ${L.monthName(f.key)} guardado${n === 1 ? '' : 's'}`, 'green');
     save();
   }
 
@@ -884,12 +1066,12 @@
 
   const SCREENS = {
     inicio: () => (isDesktop() ? renderDashboard() : renderInicio()),
-    movimientos: renderMovimientos, vencimientos: renderVencimientos, presupuesto: renderPresupuesto, deudas: renderDeudas, metas: renderMetas,
+    movimientos: renderMovimientos, vencimientos: renderVencimientos, presupuesto: renderPresupuesto, deudas: renderDeudas, metas: renderMetas, balance: renderBalance,
   };
 
   function renderScreen() {
     $('#screen').innerHTML = SCREENS[ui.tab]();
-    const mobileTab = ui.tab === 'deudas' ? 'metas' : ui.tab;
+    const mobileTab = ['deudas', 'balance'].includes(ui.tab) ? 'metas' : ui.tab;
     document.querySelectorAll('.side-tab[data-tab]').forEach((t) => t.classList.toggle('on', t.dataset.tab === ui.tab));
     document.querySelectorAll('.tab').forEach((t) => t.classList.toggle('on', t.dataset.tab === mobileTab));
     const n = urgentBills().length;
@@ -1764,6 +1946,22 @@
     },
     'form-cur': (d) => { form.cur = d.v; renderSheet(); },
     'form-goal': (d) => { form.goalId = d.v; renderSheet(); },
+    'bal-month': (d) => { ui.balMonth = L.addMonths(balKey(), Number(d.v)); renderScreen(); },
+    'bal-view': (d) => { ui.balView = d.v; renderScreen(); },
+    account: (d) => openAccountForm(d.id),
+    'account-new': () => openAccountForm(null),
+    'acc-kind': (d) => { accForm.kind = d.v; renderSheet(); },
+    'acc-cur': (d) => { accForm.cur = d.v; renderSheet(); },
+    'acc-save': () => saveAccount(),
+    'acc-del': (d) => {
+      const a = (state.accounts || []).find((x) => x.id === d.id);
+      if (!a || !confirm(`¿Quitar «${a.name}» de la lista? Sus saldos anteriores quedan en la planilla.`)) return;
+      state.accounts = state.accounts.filter((x) => x.id !== d.id);
+      closeSheet();
+      save();
+    },
+    'balances-edit': (d) => openBalancesForm(d.v),
+    'bal-save': () => saveBalances(),
     'form-withdraw': (d) => { form.withdraw = Boolean(d.v); renderSheet(); },
     goal: (d) => openGoal(d.id),
     'goal-new': () => openGoalForm(null),

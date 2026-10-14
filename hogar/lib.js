@@ -345,6 +345,136 @@
       movs: movs.slice().sort((a, b) => b.date.localeCompare(a.date)) };
   }
 
+  // ---------- Balance del hogar ----------
+  // Tipos de cuentas y bienes, y en qué rubro del balance van.
+  const ACCOUNT_KINDS = ['Cuenta bancaria', 'Efectivo', 'Billetera virtual', 'Inversión', 'Inmueble', 'Vehículo', 'Otro bien'];
+  const kindClass = (kind) => (['Cuenta bancaria', 'Efectivo', 'Billetera virtual'].includes(kind) ? 'cash' : kind === 'Inversión' ? 'invest' : 'asset');
+  const endOf = (key) => dateInMonth(key, 31);
+
+  // Último saldo cargado de una cuenta hasta el mes key (puede ser de un mes anterior).
+  function accountBalance(state, accountId, key) {
+    let best = null;
+    for (const b of state.balances || []) {
+      if (b.accountId === accountId && b.month <= key && (!best || b.month > best.month)) best = b;
+    }
+    return best;
+  }
+
+  // Saldo de un préstamo al cierre del mes según la tabla de cuotas (saldo después de la última cuota vencida).
+  function loanBalanceAt(state, loan, key, today) {
+    const rows = (state.schedule || []).filter((c) => c.loanId === loan.id);
+    const end = endOf(key);
+    let last = null;
+    for (const c of rows) if (c.due <= end && (!last || c.due > last.due)) last = c;
+    if (last) return last.balance;
+    if (rows.length && rows.every((c) => c.due > end)) {
+      const first = rows.reduce((a, c) => (c.due < a.due ? c : a));
+      return first.balance + first.principal; // saldo antes de la primera cuota de la ventana
+    }
+    return today && key === monthKey(today) && loan.balance != null ? loan.balance : null;
+  }
+
+  // Estado de resultados del mes, por lo devengado: ingresos y gastos del mes aunque no se hayan cobrado o pagado.
+  // De los préstamos solo es gasto el interés, el seguro y los diferidos; la amortización baja la deuda.
+  function incomeStatement(state, key) {
+    const rates = state.settings.rates;
+    const inMonth = (iso) => Boolean(iso) && monthKey(iso) === key;
+    const collected = new Set(state.receivables.filter((r) => r.incomeId).map((r) => r.incomeId));
+    const income = new Map();
+    const add = (map, k, v) => map.set(k, (map.get(k) || 0) + v);
+    for (const m of state.movements) {
+      if (m.type !== 'inc' || !inMonth(m.date)) continue;
+      // El cobro de una factura emitida ya se contó cuando se emitió.
+      if (collected.has(m.id) && state.receivables.some((r) => r.incomeId === m.id && r.issued)) continue;
+      add(income, m.cat, toCOP(m, rates));
+    }
+    for (const r of state.receivables) if (r.issued && inMonth(r.issued)) add(income, 'Facturas emitidas', toCOP(r, rates));
+    const expense = new Map();
+    let unpaid = 0;
+    for (const m of state.movements) if (m.type === 'exp' && inMonth(m.date)) add(expense, m.cat, toCOP(m, rates));
+    for (const b of state.bills) {
+      if (b.loanId || !inMonth(b.due)) continue;
+      add(expense, b.cat, toCOP(b, rates));
+      if (!b.paid) unpaid += toCOP(b, rates);
+    }
+    const financial = [];
+    let principal = 0;
+    for (const c of state.schedule || []) {
+      if (!inMonth(c.due)) continue;
+      const loan = state.loans.find((l) => l.id === c.loanId);
+      const fx = (v) => convert(v, c.cur, 'COP', rates);
+      financial.push({ name: loan ? loan.name : c.name || c.loanId, interest: fx(c.interest), other: fx(c.insurance + c.deferred) });
+      principal += fx(c.principal);
+    }
+    const sorted = (map) => [...map].map(([name, amount]) => ({ name, amount })).sort((a, b) => b.amount - a.amount);
+    const incomeRows = sorted(income);
+    const expenseRows = sorted(expense);
+    const totalIncome = incomeRows.reduce((s, r) => s + r.amount, 0);
+    const totalExpense = expenseRows.reduce((s, r) => s + r.amount, 0);
+    const totalFinancial = financial.reduce((s, r) => s + r.interest + r.other, 0);
+    const result = totalIncome - totalExpense - totalFinancial;
+    return { income: incomeRows, expense: expenseRows, financial, totalIncome, totalExpense, totalFinancial, result,
+      margin: totalIncome ? (result / totalIncome) * 100 : null, principal, unpaid };
+  }
+
+  // Situación patrimonial al cierre del mes: cuentas y bienes, por cobrar, préstamos y facturas impagas.
+  function balanceSheet(state, key, today) {
+    const rates = state.settings.rates;
+    const end = endOf(key);
+    const groups = { cash: [], invest: [], asset: [] };
+    const missing = [];
+    for (const a of state.accounts || []) {
+      const b = accountBalance(state, a.id, key);
+      if (!b) { missing.push(a); continue; }
+      groups[kindClass(a.kind)].push({ id: a.id, name: a.name, amount: convert(b.amount, a.cur, 'COP', rates), month: b.month, stale: b.month !== key });
+    }
+    const receivables = state.receivables.filter((r) => (r.issued || r.due) <= end && !(r.collected && (r.collectedAt || '') <= end))
+      .map((r) => ({ name: r.client, amount: toCOP(r, rates) }));
+    const loans = [];
+    const noData = [];
+    for (const l of state.loans) {
+      const bal = loanBalanceAt(state, l, key, today);
+      if (bal == null) noData.push(l.name);
+      else loans.push({ name: l.name, amount: convert(bal, l.cur, 'COP', rates) });
+    }
+    const payables = state.bills.filter((b) => b.due <= end && !(b.paid && (b.paidAt || b.due) <= end))
+      .map((b) => ({ name: b.name, amount: toCOP(b, rates), due: b.due }));
+    const sum = (xs) => xs.reduce((s, x) => s + x.amount, 0);
+    const assets = { cash: sum(groups.cash), invest: sum(groups.invest), receivables: sum(receivables), asset: sum(groups.asset) };
+    const totalAssets = assets.cash + assets.invest + assets.receivables + assets.asset;
+    const totalLiabilities = sum(loans) + sum(payables);
+    return { key, groups, receivables, loans, payables, assets, totalAssets, totalLoans: sum(loans), totalPayables: sum(payables),
+      totalLiabilities, netWorth: totalAssets - totalLiabilities, missing, noData };
+  }
+
+  // Flujo de efectivo simple: cuánto cambiaron las cuentas líquidas contra lo registrado en el mes.
+  // La diferencia son gastos o ingresos sin cargar (o cuentas que no están en la lista).
+  function cashFlow(state, key) {
+    const rates = state.settings.rates;
+    const prev = addMonths(key, -1);
+    const cash = (state.accounts || []).filter((a) => kindClass(a.kind) === 'cash');
+    const at = (k) => {
+      let total = 0;
+      let complete = cash.length > 0;
+      for (const a of cash) {
+        const b = (state.balances || []).find((x) => x.accountId === a.id && x.month === k);
+        if (b) total += convert(b.amount, a.cur, 'COP', rates); else complete = false;
+      }
+      return { total, complete };
+    };
+    const opening = at(prev);
+    const closing = at(key);
+    const inMonth = (iso) => Boolean(iso) && monthKey(iso) === key;
+    const receipts = state.movements.filter((m) => m.type === 'inc' && inMonth(m.date)).reduce((s, m) => s + toCOP(m, rates), 0);
+    const spending = state.movements.filter((m) => m.type === 'exp' && inMonth(m.date)).reduce((s, m) => s + toCOP(m, rates), 0)
+      + state.bills.filter((b) => !b.loanId && b.paid && inMonth(b.paidAt || b.due)).reduce((s, b) => s + toCOP(b, rates), 0);
+    const loanPayments = state.bills.filter((b) => b.loanId && b.paid && inMonth(b.paidAt || b.due)).reduce((s, b) => s + toCOP(b, rates), 0);
+    const recorded = receipts - spending - loanPayments;
+    const change = closing.total - opening.total;
+    return { opening: opening.total, closing: closing.total, complete: opening.complete && closing.complete, hasAccounts: cash.length > 0,
+      receipts, spending, loanPayments, recorded, change, unexplained: change - recorded };
+  }
+
   // ---------- Alertas ----------
   function buildAlerts(state, today) {
     const key = monthKey(today);
@@ -558,6 +688,9 @@
       people: ['Alan', 'Karo'],
       rules: [],
       goals: [],
+      accounts: [],
+      balances: [],
+      schedule: [],
       loans: [],
       recurring: [],
       bills: [],
@@ -623,7 +756,7 @@
     const base = baseState(today);
     const s = { ...base, ...raw, settings: { ...base.settings, ...raw.settings } };
     s.settings.rates = { ...base.settings.rates, ...(raw.settings.rates || {}) };
-    for (const k of ['categories', 'incomeCats', 'methods', 'people', 'rules', 'goals', 'loans', 'recurring', 'bills', 'movements', 'receivables']) {
+    for (const k of ['categories', 'incomeCats', 'methods', 'people', 'rules', 'goals', 'accounts', 'balances', 'schedule', 'loans', 'recurring', 'bills', 'movements', 'receivables']) {
       if (!Array.isArray(s[k])) s[k] = base[k];
     }
     if (!s.categories.length) s.categories = base.categories;
@@ -714,6 +847,17 @@
     const methods = t('Listas').map((r) => str(r['Medio de pago'])).filter(Boolean);
     if (methods.length) s.methods = methods;
 
+    s.accounts = t('Cuentas y bienes').filter((r) => r['ID'] && str(r['Activa']) !== 'No').map((r) => ({
+      id: str(r['ID']), name: str(r['Nombre']), kind: str(r['Tipo']) || 'Cuenta bancaria', cur: str(r['Moneda']) || 'COP', note: str(r['Comentarios']),
+    }));
+    s.balances = t('Saldos').filter((r) => r['Cuenta ID'] && r['Mes']).map((r) => ({
+      accountId: str(r['Cuenta ID']), month: str(r['Mes']).slice(0, 7), amount: num(r['Saldo']),
+    }));
+    s.schedule = t('Cuotas').filter((r) => r['ID préstamo'] && r['Vencimiento']).map((r) => ({
+      loanId: str(r['ID préstamo']), name: str(r['Préstamo']), n: num(r['N° cuota']), due: str(r['Vencimiento']), cur: str(r['Moneda']) || 'COP',
+      principal: num(r['Amortización']), interest: num(r['Interés']), insurance: num(r['Seguro']), deferred: num(r['Diferidos']),
+      installment: num(r['Cuota']), balance: num(r['Saldo']),
+    }));
     s.goals = t('Metas').filter((r) => r['ID'] && str(r['Activa']) !== 'No').map((r) => ({
       id: str(r['ID']), name: str(r['Nombre']), target: num(r['Monto objetivo']), cur: str(r['Moneda']) || 'COP',
       due: str(r['Fecha objetivo']), initial: num(r['Ahorro inicial']), note: str(r['Comentarios']),
@@ -779,6 +923,15 @@
         if (m.type === 'save') row['Meta ID'] = m.goalId || '';
         return row;
       }),
+      'Cuentas y bienes': (s.accounts || []).map((a) => ({
+        'ID': a.id, 'Nombre': a.name, 'Tipo': a.kind, 'Moneda': a.cur, 'Activa': 'Sí', 'Comentarios': a.note || '',
+      })),
+      'Saldos': (s.balances || []).map((b) => {
+        const a = (s.accounts || []).find((x) => x.id === b.accountId);
+        // Si la cuenta se quitó de la lista, sus saldos quedan como estaban en la planilla.
+        return a ? { 'Cuenta ID': b.accountId, 'Cuenta': a.name, 'Mes': b.month + '-01', 'Moneda': a.cur, 'Saldo': b.amount }
+          : { 'Cuenta ID': b.accountId, 'Mes': b.month + '-01', 'Saldo': b.amount };
+      }),
       'Metas': (s.goals || []).map((g) => ({
         'ID': g.id, 'Nombre': g.name, 'Monto objetivo': g.target, 'Moneda': g.cur, 'Fecha objetivo': g.due || '',
         'Ahorro inicial': g.initial || 0, 'Activa': 'Sí', 'Comentarios': g.note || '',
@@ -811,7 +964,7 @@
     };
   }
 
-  const ROW_KEYS = { 'Categorías': ['Categoría', 'Subcategoría'], 'Ajustes': ['Ajuste'] };
+  const ROW_KEYS = { 'Categorías': ['Categoría', 'Subcategoría'], 'Ajustes': ['Ajuste'], 'Saldos': ['Cuenta ID', 'Mes'] };
   const rowKey = (table, row) => (ROW_KEYS[table] || ['ID']).map((k) => str(row[k])).join('|');
 
   // Cambios entre dos versiones de las filas: upsert de lo nuevo o modificado, delete de lo que ya no está.
@@ -854,6 +1007,7 @@
     ensureRecurring, dueInfo, isUrgent, groupBills, dayDot, calendarCells,
     elapsedDays, categoryStats, monthSummary, buildAlerts, monthSeries, dailySpend, filterMovements,
     peopleOf, personOf, suggestCategory, spendByPerson, goalProgress,
+    ACCOUNT_KINDS, kindClass, accountBalance, loanBalanceAt, incomeStatement, balanceSheet, cashFlow,
     toICS, toCSV, parseMovementRows, parseNumber, cellToISO, parseReceipt,
     baseState, sampleState, normalizeState, clearSamples,
   };
