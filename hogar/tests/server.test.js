@@ -293,3 +293,23 @@ test('balance: cuentas y saldos se crean solos y el cierre recuerda cargar saldo
   assert.match(gas.mails[0].htmlBody, /Saldos de cierre para cargar.*<b>Efectivo<\/b>/);
   assert.doesNotMatch(gas.mails[0].htmlBody, /<b>Banco<\/b>/);
 });
+
+test('ocr: sube la foto a Drive como documento, devuelve el texto y borra el temporal', () => {
+  const gas = createGas(planilla(), { now: NOW, fetch: (url) => {
+    if (url.includes('/upload/drive/v2/files')) return { code: 200, body: JSON.stringify({ id: 'doc123' }) };
+    if (url.includes('/export')) return { code: 200, body: 'EXITO\nTOTAL $ 12.600' };
+    return { code: 204, body: '' };
+  } });
+  const res = gas.post({ token: 'secreto', action: 'ocr', image: Buffer.from('jpegbytes').toString('base64'), mime: 'image/jpeg' });
+  assert.deepEqual(res, { ok: true, text: 'EXITO\nTOTAL $ 12.600' });
+  assert.deepEqual(gas.fetches.map((f) => [f.method, f.url.split('?')[0].replace('https://www.googleapis.com', '')]), [
+    ['post', '/upload/drive/v2/files'], ['get', '/drive/v3/files/doc123/export'], ['delete', '/drive/v3/files/doc123']]);
+  assert.match(gas.fetches[0].url, /ocr=true&ocrLanguage=es/);
+  assert.equal(gas.fetches[0].headers.Authorization, 'Bearer tok-oauth');
+  assert.ok(Buffer.from(gas.fetches[0].payload).toString().includes('jpegbytes'));
+  assert.equal(rowsOf(gas, 'Movimientos').length, 2, 'leer una foto no toca la planilla');
+
+  assert.equal(gas.post({ token: 'otro', action: 'ocr', image: 'x' }).ok, false);
+  const fail = createGas(planilla(), { now: NOW, fetch: () => ({ code: 403, body: 'no' }) });
+  assert.match(fail.post({ token: 'secreto', action: 'ocr', image: 'eA==' }).error, /lector de Google/);
+});

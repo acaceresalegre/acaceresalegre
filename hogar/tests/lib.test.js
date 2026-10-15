@@ -506,3 +506,61 @@ test('cuentas y saldos vuelven a la planilla', () => {
   assert.deepEqual(ops.filter((o) => o.table === 'Cuentas y bienes').map((o) => [o.op, o.row.ID]), [['delete', 'B4']]);
   assert.equal(ops.filter((o) => o.table === 'Saldos' && o.op === 'delete').length, 0, 'los saldos de una cuenta quitada no se borran');
 });
+
+// ---------- Lectura de tickets ----------
+test('ticket: el total no se confunde con el NIT, el teléfono ni el número de factura', () => {
+  const t = [
+    'Almacenes Éxito S.A.',
+    'NIT 890.900.608-9',
+    'Tel 604 3396565',
+    'Factura electrónica de venta N° 4567891',
+    'Fecha: 11/10/2026 14:32',
+    'LECHE ENTERA 1L        4.500',
+    'PAN TAJADO             6.200',
+    'SUBTOTAL              10.700',
+    'IVA 19%                 1.900',
+    'TOTAL                 $ 12.600',
+    'EFECTIVO              20.000',
+    'CAMBIO                 7.400',
+  ].join('\n');
+  assert.deepEqual(L.parseReceipt(t, 'ticket', '2026-10-15'),
+    { merchant: 'Almacenes Éxito S.A.', total: 12600, date: '2026-10-11', cat: 'Alimentación', sub: 'Supermercado' });
+});
+
+test('ticket: total en la línea siguiente y errores típicos del lector (O por 0)', () => {
+  const t = 'DROGUERIA CRUZ VERDE\nNIT. 800149695\nTOTAL A PAGAR\n$ 3O.4OO\nGracias por su compra\n15-oct-2026';
+  const r = L.parseReceipt(t, 'ticket', '2026-10-15');
+  assert.equal(r.total, 30400);
+  assert.equal(r.date, '2026-10-15');
+  assert.equal(r.cat, 'Salud');
+});
+
+test('ticket sin la palabra total: usa el monto con formato de plata, nunca un código', () => {
+  const t = 'Panadería La Espiga\nCod 7702004003508\nCroissant x2   9.800\nCafé            4.500\nPagado con tarjeta  14.300';
+  assert.equal(L.parseReceipt(t, 'ticket', '2026-10-15').total, 14300);
+  assert.equal(L.parseReceipt('hola\n12345678901\nabc', 'ticket', '2026-10-15').total, 0, 'sin montos claros no inventa uno');
+});
+
+test('factura de servicios: total a pagar y fecha de «pague hasta»', () => {
+  const t = [
+    'EPM Empresas Públicas de Medellín E.S.P.',
+    'Contrato 12345678',
+    'Fecha de expedición 02/10/2026',
+    'Periodo facturado 01 sep 2026 - 30 sep 2026',
+    'Valor del consumo 187.940',
+    'Total a pagar',
+    '$ 215.380',
+    'Pague hasta',
+    '20 de octubre de 2026',
+  ].join('\n');
+  const r = L.parseReceipt(t, 'factura', '2026-10-15');
+  assert.equal(r.total, 215380);
+  assert.equal(r.date, '2026-10-20');
+  assert.equal(r.cat, 'Gastos fijos');
+  assert.equal(r.merchant, 'EPM Empresas Públicas de Medellín E.S.P.');
+});
+
+test('fechas fuera de rango o imposibles se ignoran', () => {
+  assert.equal(L.parseReceipt('Tienda\nFecha 45/13/2026\nTOTAL 5.000', 'ticket', '2026-10-15').date, null);
+  assert.equal(L.parseReceipt('Tienda\n01/01/1999\nTOTAL 5.000', 'ticket', '2026-10-15').date, null);
+});

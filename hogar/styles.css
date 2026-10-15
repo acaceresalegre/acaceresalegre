@@ -476,3 +476,8 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 14px; }
 .amount-row.small { padding: 6px 12px; border-radius: 14px; }
 .amount-row.small .cur { font-size: 16px; }
 .amount-row.small input { font-size: 22px; }
+
+/* Texto leído de un ticket, para revisar */
+.scan-text { margin: 0 0 14px; font-size: 12.5px; color: var(--ink-2); }
+.scan-text summary { cursor: pointer; padding: 4px 0; }
+.scan-text pre { white-space: pre-wrap; max-height: 180px; overflow: auto; background: var(--chip); border-radius: 10px; padding: 10px; font-size: 12px; margin: 6px 0 0; }

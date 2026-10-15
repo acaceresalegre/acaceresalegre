@@ -78,6 +78,7 @@ function doPost(e) {
   return respond(function () {
     var body = JSON.parse((e && e.postData && e.postData.contents) || '{}');
     checkToken(body.token);
+    if (body.action === 'ocr') return { ok: true, text: leerImagen(body.image, body.mime) };
     var lock = LockService.getScriptLock();
     lock.waitLock(20000);
     try {
@@ -824,3 +825,43 @@ function asegurarAjuste(nombre, valor, nota) {
   var row = t.headers.map(function (hd) { return hd === 'Ajuste' ? nombre : hd === 'Valor' ? valor : hd === 'Fuente o nota' ? nota : ''; });
   t.sheet.getRange(n, 1, 1, row.length).setValues([row]);
 }
+
+// ---------- Lectura de tickets con el lector de Google Drive ----------
+// La app manda la foto (achicada) y el programa la convierte en un documento de Google con
+// reconocimiento de texto, lee el texto y borra el archivo temporal enseguida.
+var OCR_MAX_BYTES = 4 * 1024 * 1024;
+
+function leerImagen(base64, mime) {
+  if (!base64) throw new Error('Falta la imagen');
+  var bytes = Utilities.base64Decode(base64);
+  if (bytes.length > OCR_MAX_BYTES) throw new Error('La imagen es demasiado grande');
+  var type = /^image\/(jpeg|png|webp)$/.test(mime || '') ? mime : 'image/jpeg';
+  var boundary = 'cuentascasa' + Date.now();
+  var auth = { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() };
+  var subir = function (url, meta) {
+    var head = Utilities.newBlob('--' + boundary + '\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n' + JSON.stringify(meta) +
+      '\r\n--' + boundary + '\r\nContent-Type: ' + type + '\r\n\r\n').getBytes();
+    var tail = Utilities.newBlob('\r\n--' + boundary + '--').getBytes();
+    return UrlFetchApp.fetch(url, {
+      method: 'post', contentType: 'multipart/related; boundary=' + boundary, payload: head.concat(bytes).concat(tail),
+      headers: auth, muteHttpExceptions: true,
+    });
+  };
+  var nombre = 'Cuentas Casa · lectura temporal';
+  var doc = 'application/vnd.google-apps.document';
+  var res = subir('https://www.googleapis.com/upload/drive/v2/files?uploadType=multipart&convert=true&ocr=true&ocrLanguage=es', { title: nombre, mimeType: doc });
+  // Si la versión 2 de la API no está disponible, la 3 también convierte imágenes con reconocimiento de texto.
+  if (res.getResponseCode() >= 300) res = subir('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&ocrLanguage=es', { name: nombre, mimeType: doc });
+  if (res.getResponseCode() >= 300) throw new Error('El lector de Google no pudo leer la imagen (' + res.getResponseCode() + ')');
+  var id = JSON.parse(res.getContentText()).id;
+  try {
+    var txt = UrlFetchApp.fetch('https://www.googleapis.com/drive/v3/files/' + id + '/export?mimeType=text%2Fplain', { headers: auth, muteHttpExceptions: true });
+    if (txt.getResponseCode() >= 300) throw new Error('No se pudo leer el texto (' + txt.getResponseCode() + ')');
+    return txt.getContentText();
+  } finally {
+    UrlFetchApp.fetch('https://www.googleapis.com/drive/v3/files/' + id, { method: 'delete', headers: auth, muteHttpExceptions: true });
+  }
+}
+
+// No se llama nunca: hace que Google pida el permiso de Drive que usa leerImagen.
+function permisoDrive_() { return DriveApp.getRootFolder(); }
