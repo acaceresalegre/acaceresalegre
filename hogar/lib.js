@@ -475,6 +475,167 @@
       receipts, spending, loanPayments, recorded, change, unexplained: change - recorded };
   }
 
+  // ---------- Plan por cobro ----------
+  const median = (xs) => {
+    const a = xs.slice().sort((x, y) => x - y);
+    return a.length ? (a.length % 2 ? a[(a.length - 1) / 2] : (a[a.length / 2 - 1] + a[a.length / 2]) / 2) : 0;
+  };
+  const parseDays = (v) => [...new Set(String(v ?? '').split(/[^\d]+/).map(Number).filter((d) => d >= 1 && d <= 31))].sort((a, b) => a - b);
+
+  // Cobros estimados con los ingresos de los últimos 3 meses cerrados: los que aparecen en al menos 2 meses,
+  // con su día y monto típicos (si llegan 2 veces por mes, como una quincena, se toman los dos).
+  function inferIncomePlan(state, today) {
+    const key = monthKey(today);
+    const months = [1, 2, 3].map((i) => addMonths(key, -i));
+    const byCat = new Map();
+    for (const m of state.movements) {
+      const k = monthKey(m.date);
+      if (m.type !== 'inc' || !months.includes(k)) continue;
+      if (!byCat.has(m.cat)) byCat.set(m.cat, new Map());
+      const mm = byCat.get(m.cat);
+      if (!mm.has(k)) mm.set(k, []);
+      mm.get(k).push({ day: dayOf(m.date), amount: m.amount, cur: m.cur });
+    }
+    const out = [];
+    for (const [cat, mm] of byCat) {
+      if (mm.size < 2) continue;
+      const lists = [...mm.values()].map((l) => l.sort((a, b) => a.day - b.day));
+      const counts = lists.map((l) => l.length);
+      const n = Math.min(2, Math.round(median(counts)));
+      const usable = lists.filter((l) => l.length >= n);
+      for (let i = 0; i < n; i++) {
+        out.push({ id: `auto-${cat}-${i}`, name: cat, cat, cur: usable[0][i].cur,
+          amount: Math.round(median(usable.map((l) => l[i].amount))), days: [Math.round(median(usable.map((l) => l[i].day)))], inferred: true });
+      }
+    }
+    return out;
+  }
+
+  // Tramos entre cobros desde el último cobro hasta fin del mes siguiente: cuánto entra, qué facturas vencen,
+  // cuánto se va en gastos variables (promedio diario de los últimos 90 días) y cuánto queda libre.
+  function paycheckPlan(state, today) {
+    const rates = state.settings.rates;
+    const configured = (state.incomePlan || []).filter((p) => p.amount > 0 && p.days.length);
+    const plan = configured.length ? configured : inferIncomePlan(state, today);
+    const key = monthKey(today);
+    const end = dateInMonth(addMonths(key, 1), 31);
+    const events = new Map();
+    for (const k of [addMonths(key, -1), key, addMonths(key, 1)]) {
+      for (const p of plan) {
+        for (const d of p.days) {
+          const iso = dateInMonth(k, d);
+          if (iso > end) continue;
+          if (!events.has(iso)) events.set(iso, []);
+          events.get(iso).push({ name: p.name, cat: p.cat, amount: convert(p.amount, p.cur, 'COP', rates) });
+        }
+      }
+    }
+    const dates = [...events.keys()].sort();
+    let first = dates.filter((d) => d <= today).pop();
+    if (!first) first = key + '-01';
+    const starts = [first, ...dates.filter((d) => d > first)];
+    const since = toISO(new Date(parseISO(today).getTime() - 90 * 86400000));
+    const variable90 = state.movements.filter((m) => m.type === 'exp' && m.date > since && m.date <= today).reduce((s, m) => s + toCOP(m, rates), 0);
+    const perDay = variable90 / 90;
+    let carry = 0;
+    const periods = starts.map((start, i) => {
+      const next = starts[i + 1];
+      const last = next ? toISO(new Date(parseISO(next).getTime() - 86400000)) : end;
+      const current = start <= today && today <= last;
+      const incomes = (events.get(start) || []).map((e) => ({
+        ...e, received: state.movements.some((m) => m.type === 'inc' && m.cat === e.cat && m.date >= start && m.date <= last),
+      }));
+      const bills = state.bills.filter((b) => b.due >= start && b.due <= last).sort((a, b) => a.due.localeCompare(b.due))
+        .map((b) => ({ id: b.id, name: b.name, due: b.due, amount: toCOP(b, rates), paid: b.paid }));
+      const fromDay = current ? today : start;
+      const days = Math.max(0, daysBetween(fromDay, last) + 1);
+      const income = incomes.reduce((s, e) => s + e.amount, 0);
+      const toPay = bills.filter((b) => !b.paid).reduce((s, b) => s + b.amount, 0);
+      const variable = perDay * days;
+      const free = income - toPay - variable;
+      carry += free;
+      return { start, end: last, current, incomes, bills, income, toPay, variable, days, free, cumulative: carry };
+    }).filter((p) => p.end >= today);
+    return { periods, inferred: !configured.length, plan, perDay };
+  }
+
+  // ---------- Evolución del patrimonio ----------
+  function netWorthSeries(state, endKey, n, today) {
+    const out = [];
+    for (let i = n - 1; i >= 0; i--) {
+      const key = addMonths(endKey, -i);
+      const b = balanceSheet(state, key, today);
+      const hasData = b.groups.cash.length + b.groups.invest.length + b.groups.asset.length > 0;
+      out.push({ key, assets: b.totalAssets, liabilities: b.totalLiabilities, net: b.netWorth, hasData });
+    }
+    return out;
+  }
+
+  // ---------- Plan para salir de las deudas ----------
+  // Simula mes a mes: cada préstamo paga su cuota (capital + interés, sin seguros); el pago extra y las
+  // cuotas de los préstamos ya terminados van al préstamo elegido por la estrategia:
+  // avalancha = mayor tasa primero (paga menos interés), bola de nieve = menor saldo primero (cierra antes).
+  function debtPlan(state, today, opts = {}) {
+    const rates = state.settings.rates;
+    const key = monthKey(today);
+    const loans = [];
+    for (const l of state.loans) {
+      const bal = loanBalanceAt(state, l, key, today);
+      if (!(bal > 0)) continue;
+      const row = (state.schedule || []).find((c) => c.loanId === l.id && monthKey(c.due) === addMonths(key, 1))
+        || (state.schedule || []).find((c) => c.loanId === l.id && monthKey(c.due) === key);
+      const pay = row ? row.interest + row.principal : l.installment;
+      let rate = Number(l.rate) || 0;
+      if (rate > 1) rate /= 100;
+      loans.push({ id: l.id, name: l.name, cur: l.cur, rate, balance: convert(bal, l.cur, 'COP', rates), payment: Math.max(0, convert(pay, l.cur, 'COP', rates)) });
+    }
+    const simulate = (extra, strategy, rollover) => {
+      const st = loans.map((l) => ({ ...l, bal: l.balance, done: null, interest: 0 }));
+      let interest = 0;
+      for (let m = 1; m <= 600 && st.some((x) => x.done == null); m++) {
+        let pool = extra;
+        for (const x of st) {
+          if (x.done != null) { if (rollover) pool += x.payment; continue; }
+          const i = (x.bal * x.rate) / 12;
+          x.bal += i;
+          x.interest += i;
+          interest += i;
+          const p = Math.min(x.bal, x.payment);
+          x.bal -= p;
+          if (x.payment > x.bal + p) pool += x.payment - p; // lo que sobró de la última cuota
+          if (x.bal < 1) { x.bal = 0; x.done = m; }
+        }
+        const order = st.filter((x) => x.done == null)
+          .sort((a, b) => (strategy === 'snowball' ? a.bal - b.bal : b.rate - a.rate || a.bal - b.bal));
+        for (const x of order) {
+          if (pool <= 0) break;
+          const p = Math.min(pool, x.bal);
+          x.bal -= p;
+          pool -= p;
+          if (x.bal < 1) { x.bal = 0; x.done = m; }
+        }
+      }
+      return { st, interest, months: st.every((x) => x.done != null) ? Math.max(0, ...st.map((x) => x.done)) : null };
+    };
+    const extra = Math.max(0, Number(opts.extra) || 0);
+    const strategy = opts.strategy === 'snowball' ? 'snowball' : 'avalanche';
+    const base = simulate(0, strategy, false);
+    const plan = simulate(extra, strategy, extra > 0); // sin extra, el plan es seguir como hoy
+    const order = loans.slice().sort((a, b) => (strategy === 'snowball' ? a.balance - b.balance : b.rate - a.rate || a.balance - b.balance)).map((l) => l.id);
+    const when = (m) => (m == null ? null : addMonths(key, m));
+    return {
+      strategy, extra, order,
+      loans: loans.map((l, i) => ({ ...l, baseEnd: when(base.st[i].done), planEnd: when(plan.st[i].done),
+        baseInterest: base.st[i].done == null ? null : base.st[i].interest, planInterest: plan.st[i].done == null ? null : plan.st[i].interest })),
+      // Si algún préstamo no se termina, el interés total no tiene fin: no se informa ni se compara.
+      baseInterest: base.months == null ? null : base.interest, planInterest: plan.months == null ? null : plan.interest,
+      baseEnd: when(base.months), planEnd: when(plan.months),
+      saved: base.months != null && plan.months != null ? base.interest - plan.interest : null,
+      monthsSaved: base.months != null && plan.months != null ? base.months - plan.months : null,
+      endless: loans.filter((l, i) => base.st[i].done == null).map((l) => l.name),
+    };
+  }
+
   // ---------- Alertas ----------
   function buildAlerts(state, today) {
     const key = monthKey(today);
@@ -790,6 +951,7 @@
       accounts: [],
       balances: [],
       schedule: [],
+      incomePlan: [],
       loans: [],
       recurring: [],
       bills: [],
@@ -855,7 +1017,7 @@
     const base = baseState(today);
     const s = { ...base, ...raw, settings: { ...base.settings, ...raw.settings } };
     s.settings.rates = { ...base.settings.rates, ...(raw.settings.rates || {}) };
-    for (const k of ['categories', 'incomeCats', 'methods', 'people', 'rules', 'goals', 'accounts', 'balances', 'schedule', 'loans', 'recurring', 'bills', 'movements', 'receivables']) {
+    for (const k of ['categories', 'incomeCats', 'methods', 'people', 'rules', 'goals', 'accounts', 'balances', 'schedule', 'incomePlan', 'loans', 'recurring', 'bills', 'movements', 'receivables']) {
       if (!Array.isArray(s[k])) s[k] = base[k];
     }
     if (!s.categories.length) s.categories = base.categories;
@@ -998,7 +1160,11 @@
       id: str(r['ID']), name: str(r['Préstamo']), cur: str(r['Moneda']) || 'COP', installment: num(r['Próxima cuota']),
       day: num(r['Día de vencimiento']) || null, balance: r['Saldo actual'] === undefined ? null : num(r['Saldo actual']),
       capital: num(r['Capital']) || null, paidCount: r['Cuotas vencidas'] === undefined ? null : num(r['Cuotas vencidas']),
-      totalCount: num(r['Plazo (cuotas)']) || null,
+      totalCount: num(r['Plazo (cuotas)']) || null, rate: num(r['TNA']) || 0,
+    }));
+    s.incomePlan = t('Ingresos esperados').filter((r) => r['ID'] && str(r['Activa']) !== 'No').map((r) => ({
+      id: str(r['ID']), name: str(r['Nombre']), cat: str(r['Subcategoría']) || str(r['Nombre']), cur: str(r['Moneda']) || 'COP',
+      amount: num(r['Importe']), days: parseDays(r['Días de cobro']),
     }));
     s.catCodes = codes;
     s.synced = true;
@@ -1022,6 +1188,9 @@
         if (m.type === 'save') row['Meta ID'] = m.goalId || '';
         return row;
       }),
+      'Ingresos esperados': (s.incomePlan || []).map((p) => ({
+        'ID': p.id, 'Nombre': p.name, 'Subcategoría': p.cat, 'Moneda': p.cur, 'Importe': p.amount, 'Días de cobro': p.days.join(', '), 'Activa': 'Sí',
+      })),
       'Cuentas y bienes': (s.accounts || []).map((a) => ({
         'ID': a.id, 'Nombre': a.name, 'Tipo': a.kind, 'Moneda': a.cur, 'Activa': 'Sí', 'Comentarios': a.note || '',
       })),
@@ -1107,6 +1276,7 @@
     elapsedDays, categoryStats, monthSummary, buildAlerts, monthSeries, dailySpend, filterMovements,
     peopleOf, personOf, suggestCategory, spendByPerson, goalProgress,
     ACCOUNT_KINDS, kindClass, accountBalance, loanBalanceAt, incomeStatement, balanceSheet, cashFlow,
+    parseDays, inferIncomePlan, paycheckPlan, netWorthSeries, debtPlan,
     toICS, toCSV, parseMovementRows, parseNumber, cellToISO, parseReceipt,
     baseState, sampleState, normalizeState, clearSamples,
   };
