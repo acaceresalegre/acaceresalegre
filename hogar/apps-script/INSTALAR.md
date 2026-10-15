@@ -74,7 +74,16 @@ Quién los recibe: pestaña **Ajustes → Correos del resumen**, varias direccio
 (por ejemplo `tu-mail@gmail.com, mail-de-karo@hotmail.com`). Para ver cómo llega: **Cuentas Casa → Enviar cierre
 preliminar de prueba**.
 
-## 7. Reglas de categorías
+## 7. Lectura de tickets con Google
+
+Con la app conectada, las fotos de tickets y facturas se leen con el lector de Google Drive (mucho más preciso que
+el del celular). La app achica la foto y la manda a la planilla; el programa la convierte en un documento temporal
+en el Drive del dueño de la planilla, lee el texto y lo borra enseguida. Sin conexión se usa el lector del celular.
+
+Esta función pide dos permisos nuevos (**ver y administrar archivos de Drive** y **conectarse a un servicio
+externo**). Para darlos, después de pegar la versión nueva corré **Cuentas Casa → 1. Instalar** y aceptá.
+
+## 8. Reglas de categorías
 
 En la pestaña **Reglas**, cada fila dice: si el comentario **contiene** este texto, sugerir esta categoría y
 subcategoría (Tipo `Gasto` o `Ingreso`; `Activa` en `No` la apaga). No distingue mayúsculas ni tildes, y si

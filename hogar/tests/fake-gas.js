@@ -94,6 +94,7 @@ function createGas(tables, opts = {}) {
   const calendars = [];
   const ui = { prompts: [], promptAnswer: null, dialogs: [], alerts: [] };
   const mails = [];
+  const fetches = [];
   const triggers = [];
   const now = opts.now || (() => new Date());
 
@@ -107,6 +108,8 @@ function createGas(tables, opts = {}) {
       return new Date(+m[1], +m[2] - 1, +m[3], +(m[4] || 0), +(m[5] || 0));
     },
     getUuid() { return require('crypto').randomUUID(); },
+    base64Decode: (b) => [...Buffer.from(b, 'base64')],
+    newBlob: (str) => ({ getBytes: () => [...Buffer.from(str, 'utf8')] }),
   };
   class FixedDate extends Date {
     constructor(...a) { if (a.length) super(...a); else super(now().getTime()); }
@@ -151,9 +154,17 @@ function createGas(tables, opts = {}) {
       createCalendar: (n) => { const c = new FakeCalendar(n); calendars.push(c); return c; },
     },
     ScriptApp: {
+      getOAuthToken: () => 'tok-oauth',
       getProjectTriggers: () => triggers.map((fn) => ({ getHandlerFunction: () => fn })),
       deleteTrigger: (tr) => { triggers.splice(triggers.indexOf(tr.getHandlerFunction()), 1); },
       newTrigger: (fn) => ({ timeBased() { return this; }, everyHours() { return this; }, everyDays() { return this; }, atHour() { return this; }, create() { triggers.push(fn); } }),
+    },
+    UrlFetchApp: {
+      fetch: (url, o = {}) => {
+        fetches.push({ url, method: o.method || 'get', headers: o.headers, contentType: o.contentType, payload: o.payload });
+        const r = (opts.fetch || (() => ({ code: 200, body: '{}' })))(url, o);
+        return { getResponseCode: () => r.code, getContentText: () => r.body };
+      },
     },
     Session: { getEffectiveUser: () => ({ getEmail: () => opts.owner || 'alan@example.com' }) },
     MailApp: { sendEmail: (m) => mails.push(m) },
@@ -165,7 +176,7 @@ function createGas(tables, opts = {}) {
   vm.runInContext(code, sandbox);
 
   return {
-    sheets, props, calendars, sandbox, ui, mails, triggers,
+    sheets, props, calendars, sandbox, ui, mails, triggers, fetches,
     get(params) { return JSON.parse(sandbox.doGet({ parameter: params }).text); },
     post(body) { return JSON.parse(sandbox.doPost({ postData: { contents: JSON.stringify(body) } }).text); },
     run(fn) { return sandbox[fn](); },

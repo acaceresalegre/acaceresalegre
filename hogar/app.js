@@ -1324,7 +1324,7 @@
         <button class="primary" data-act="goal-new">Crear una meta</button>`;
     }
     return `<h3>${f.editId ? 'Editar movimiento' : 'Agregar'}</h3>
-      ${f.scanNote ? `<div class="notice amber" style="margin:6px 0 14px">${esc(f.scanNote)}</div>` : f.editId ? '<div style="height:10px"></div>' : `
+      ${f.scanNote ? `<div class="notice amber" style="margin:6px 0 ${f.scanText ? 4 : 14}px">${esc(f.scanNote)}</div>${f.scanText ? `<details class="scan-text"><summary>Ver el texto leído</summary><pre>${esc(f.scanText.trim())}</pre></details>` : ''}` : f.editId ? '<div style="height:10px"></div>' : `
       <button class="shortcut" style="margin:6px 0 14px" data-act="scan"><span class="ico">${scanIcon}</span><span class="grow"><b>Escanear ticket o factura</b></span><span class="chev">›</span></button>`}
       <div class="seg wide">${modes.map(([v, l]) => `<button class="${f.mode === v ? 'on' : ''}" data-act="form-mode" data-v="${v}">${l}</button>`).join('')}</div>
       <div class="amount-row"><span class="cur">${f.cur === 'COP' ? '$' : f.cur === 'ARS' ? 'AR$' : 'US$'}</span>
@@ -1619,6 +1619,70 @@
     return scripts[src];
   }
 
+  // Achica la foto (lado mayor 1600 px), la endereza según la cámara, la pasa a grises y estira el contraste.
+  // Así el lector trabaja con menos ruido y la subida a la planilla es liviana.
+  async function prepImage(file) {
+    let src;
+    try { src = await createImageBitmap(file, { imageOrientation: 'from-image' }); } catch (e) {
+      src = await new Promise((ok, bad) => { const im = new Image(); im.onload = () => ok(im); im.onerror = bad; im.src = URL.createObjectURL(file); });
+    }
+    const w0 = src.width;
+    const h0 = src.height;
+    const k = Math.min(1, 1600 / Math.max(w0, h0));
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.round(w0 * k);
+    canvas.height = Math.round(h0 * k);
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    ctx.drawImage(src, 0, 0, canvas.width, canvas.height);
+    const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    const d = img.data;
+    const hist = new Uint32Array(256);
+    for (let i = 0; i < d.length; i += 4) {
+      const g = (d[i] * 299 + d[i + 1] * 587 + d[i + 2] * 114) / 1000 | 0;
+      d[i] = g;
+      hist[g]++;
+    }
+    const n = d.length / 4;
+    let lo = 0;
+    let hi = 255;
+    for (let acc = 0; lo < 255 && (acc += hist[lo]) < n * 0.02;) lo++;
+    for (let acc = 0; hi > 0 && (acc += hist[hi]) < n * 0.02;) hi--;
+    const span = Math.max(1, hi - lo);
+    for (let i = 0; i < d.length; i += 4) {
+      const v = Math.max(0, Math.min(255, ((d[i] - lo) * 255) / span));
+      d[i] = d[i + 1] = d[i + 2] = v;
+    }
+    ctx.putImageData(img, 0, 0);
+    const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
+    return { canvas, dataUrl, base64: dataUrl.slice(dataUrl.indexOf(',') + 1) };
+  }
+
+  // Texto de la foto: primero con el lector de Google (vía la planilla), si no, con el lector del celular.
+  async function readImage(prepared, progress) {
+    if (isSynced() && navigator.onLine !== false) {
+      try {
+        progress(0.35, 'Leyendo con Google…');
+        const res = await call('POST', null, { action: 'ocr', image: prepared.base64, mime: 'image/jpeg' });
+        if (res.text && res.text.trim()) return { text: res.text, source: 'google' };
+      } catch (e) { /* sigue con el lector del celular */ }
+    }
+    progress(0.1, 'Preparando lector…');
+    await loadScript(TESSERACT_SRC);
+    const res = await window.Tesseract.recognize(prepared.canvas, 'spa', {
+      logger: (m) => { if (m.status === 'recognizing text') progress(0.3 + m.progress * 0.7, 'Leyendo la imagen…'); },
+    });
+    return { text: res.data.text, source: 'local' };
+  }
+
+  // Categoría para lo escaneado: reglas e historial del comercio; si no, la pista del ticket si existe en la lista.
+  function scanCategory(r) {
+    const sug = r.merchant && L.suggestCategory(state, r.merchant, 'exp');
+    if (sug) return { cat: sug.cat, sub: sug.sub, suggested: sug };
+    const c = state.categories.find((x) => x.name === r.cat);
+    if (c) return { cat: c.name, sub: c.subs.includes(r.sub) ? r.sub : '' };
+    return { cat: state.categories[0].name, sub: '' };
+  }
+
   function openScan() {
     const sc = { mode: 'ticket', img: null, status: '', progress: 0, fields: [], busy: false };
     const fileInputs = `
@@ -1629,7 +1693,7 @@
       <div class="seg wide">${[['ticket', 'Ticket'], ['factura', 'Factura']].map(([v, l]) => `<button class="${sc.mode === v ? 'on' : ''}" data-act="scan-mode" data-v="${v}">${l}</button>`).join('')}</div>
       <div class="scan-box">${sc.img ? `<img src="${sc.img}" alt="Foto a leer">` : `<div><div style="font-weight:700;margin-bottom:4px">Encuadrá el ${sc.mode === 'ticket' ? 'ticket' : 'documento'} completo</div><small style="color:var(--ink-2)">Con buena luz y sin sombras</small></div>`}</div>
       ${sc.busy || sc.fields.length ? `<div class="progress"><div style="width:${Math.round(sc.progress * 100)}%"></div></div>` : ''}
-      ${sc.status ? `<p class="lead" style="margin-top:8px">${esc(sc.status)}</p>` : ''}
+      ${sc.status ? `<p class="lead" style="margin-top:8px" data-scan-status>${esc(sc.status)}</p>` : ''}
       <div class="card" ${sc.fields.length ? '' : 'hidden'}>${sc.fields.map(([k, val]) => `<div class="read-field"><span>${esc(k)}</span><b>${esc(val)}</b></div>`).join('')}</div>
       ${sc.busy ? '' : fileInputs}
       <button class="danger-link" style="color:var(--ink-2)" data-act="add" data-v="${sc.mode === 'factura' ? 'bill' : 'exp'}">Cargar a mano</button>`,
@@ -1642,20 +1706,22 @@
           const file = inp.files[0];
           if (!file) return;
           sc.img = URL.createObjectURL(file);
-          sc.busy = true; sc.fields = []; sc.progress = 0.05; sc.status = 'Preparando lector…';
+          sc.busy = true; sc.fields = []; sc.progress = 0.05; sc.status = 'Preparando la foto…';
           renderSheet();
+          const progress = (p, msg) => {
+            sc.progress = p;
+            const bar = document.querySelector('#sheet .progress div');
+            if (bar) bar.style.width = Math.round(p * 100) + '%';
+            if (msg && msg !== sc.status) {
+              sc.status = msg;
+              const st = document.querySelector('#sheet [data-scan-status]');
+              if (st) st.textContent = msg;
+            }
+          };
           try {
-            await loadScript(TESSERACT_SRC);
-            const res = await window.Tesseract.recognize(file, 'spa', {
-              logger: (m) => {
-                if (m.status === 'recognizing text') {
-                  sc.progress = 0.3 + m.progress * 0.7; sc.status = 'Leyendo la imagen…';
-                  const bar = document.querySelector('#sheet .progress div');
-                  if (bar) bar.style.width = Math.round(sc.progress * 100) + '%';
-                }
-              },
-            });
-            const r = L.parseReceipt(res.data.text);
+            const prepared = await prepImage(file);
+            const read = await readImage(prepared, progress);
+            const r = L.parseReceipt(read.text, sc.mode, today);
             sc.status = 'Listo. Revisá los datos.';
             sc.progress = 1;
             sc.busy = false;
@@ -1676,9 +1742,10 @@
             openAdd(isBill ? 'bill' : 'exp', {
               digits: r.total ? String(r.total) : '',
               note: r.merchant ? r.merchant.charAt(0) + r.merchant.slice(1).toLowerCase() : '',
-              cat: r.cat || state.categories[0].name, sub: r.sub || '',
+              ...scanCategory(r),
               ...(r.date ? (isBill ? { due: r.date } : { date: r.date }) : {}),
-              scanNote: `Leído del ${isBill ? 'documento' : 'ticket'}: ${[r.merchant, r.total ? L.formatMoney(r.total, 'COP') : ''].filter(Boolean).join(' · ') || 'sin datos claros'}. Revisá los datos antes de guardar.`,
+              scanNote: `Leído del ${isBill ? 'documento' : 'ticket'}${read.source === 'google' ? ' con Google' : ''}: ${[r.merchant, r.total ? L.formatMoney(r.total, 'COP') : ''].filter(Boolean).join(' · ') || 'sin datos claros'}.${r.total ? '' : ' No encontramos el total: cargalo a mano.'} Revisá los datos antes de guardar.`,
+              scanText: read.text,
             });
           } catch (err) {
             sc.busy = false;

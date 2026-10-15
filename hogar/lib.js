@@ -630,21 +630,120 @@
     [/librer|curso|universidad|colegio/i, 'Formación', ''],
   ];
 
-  function parseReceipt(text) {
-    const lines = String(text || '').split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
-    const merchant = (lines.find((l) => (l.match(/[a-záéíóúñ]/gi) || []).length >= 3) || '').replace(/\s{2,}/g, ' ').slice(0, 40);
-    const amountsIn = (l) => (l.match(/\d{1,3}(?:[.,]\d{3})+(?:[.,]\d{1,2})?|\d+(?:[.,]\d{1,2})?/g) || []).map(parseNumber).filter((n) => n > 0);
+  // ---------- Lectura de tickets y facturas (texto que devuelve el lector) ----------
+  const MONTHS_RE = { ene: 1, feb: 2, mar: 3, abr: 4, may: 5, jun: 6, jul: 7, ago: 8, sep: 9, set: 9, oct: 10, nov: 11, dic: 12,
+    jan: 1, apr: 4, aug: 8, dec: 12 };
+  // Líneas cuyos números no son montos: identificaciones, teléfonos, numeraciones, códigos.
+  const NOT_AMOUNT = /\bnit\b|n\.?i\.?t|\bc\.?c\b|\bcc\b|tel[eé]?f?|cel\b|whats|resoluci|autoriz|\bfactura\s*(n|no|#|electr)|\bfact\b|\bref(erencia)?\b|cufe|cude|\bcaja\b|cajero|\bpos\b|terminal|\bitems?\b|art[ií]culos|unidades|cantidad|\bcant\b|c[oó]digo|\bcod\b|\bplu\b|\bean\b|\bnro\b|\bn[°º]|\bno\.\s|consecutivo|transacci|aprobaci|recibo\s*n|cuenta\s*n|contrato|\bnic\b|\bnis\b|matr[ií]cula|direcci|\bcalle\b|\bcra\b|\bcarrera\b|\bkm\b|www\.|@/i;
+  // Palabras de total, de más a menos específicas. Se descartan subtotal, IVA, descuentos y cambio.
+  const TOTAL_KEYS = [
+    /total\s*a\s*pagar|valor\s*a\s*pagar|neto\s*a\s*pagar|total\s*pagar|pague\s*(este\s*)?valor|valor\s*total\s*a\s*pagar/i,
+    /valor\s*total|total\s*factura|total\s*(cop|\$)|gran\s*total|total\s*general|importe\s*total/i,
+    /\btotal\b/i,
+  ];
+  const NOT_TOTAL = /sub\s*-?\s*total|\biva\b|impuesto|descuento|\bdcto|ahorr|cambio|vuelto|propina|base\s*(gravable|imp)|items|art[ií]culos|unidades|total\s*(de\s*)?(l[ií]neas|prod)/i;
+  const DUE_KEYS = /pague\s*hasta|p[aá]guese\s*hasta|fecha\s*l[ií]mite|l[ií]mite\s*de\s*pago|pago\s*oportuno|vence|vencimiento|fecha\s*de\s*pago|pagar\s*antes/i;
+
+  // Arregla confusiones típicas del lector dentro de los números: O→0, l/I→1, S→5, B→8.
+  // Solo toca grupos que ya tienen algún dígito y no son palabras (ej. «3O.4OO» → «30.400»).
+  const fixDigits = (l) => l.replace(/(^|[^A-Za-zÁÉÍÓÚáéíóúÑñ])([\dOoIlSB]+(?:[.,][\dOoIlSB]+)*)(?![A-Za-zÁÉÍÓÚáéíóúÑñ])/g, (all, pre, tok) =>
+    (/\d/.test(tok) ? pre + tok.replace(/[Oo]/g, '0').replace(/[Il]/g, '1').replace(/S/g, '5').replace(/B/g, '8') : all));
+
+  // Montos de una línea: con separador de miles, con signo $ o de hasta 7 cifras. Ignora fechas, horas y porcentajes.
+  function moneyIn(line) {
+    const clean = line.replace(/\d{1,4}[/\-]\d{1,2}[/\-]\d{1,4}/g, ' ').replace(/\d{1,2}:\d{2}(:\d{2})?/g, ' ').replace(/\d+([.,]\d+)?\s*%/g, ' ');
+    const out = [];
+    const re = /(\$\s*)?(\d{1,3}(?:[.,\s]\d{3})+(?:[.,]\d{1,2})?|\d+(?:[.,]\d{1,2})?)(?![\d])/g;
+    let m;
+    while ((m = re.exec(clean))) {
+      const raw = m[2];
+      const grouped = /\d[.,\s]\d{3}/.test(raw);
+      const digits = raw.replace(/\D/g, '').length;
+      if (!grouped && !m[1] && digits > 7) continue; // códigos largos sin separadores
+      if (!grouped && !m[1] && digits < 3) continue; // cantidades sueltas
+      const n = parseNumber(raw.replace(/\s/g, ''));
+      if (n > 0 && n < 1e9) out.push({ n, strong: grouped || Boolean(m[1]) });
+    }
+    return out;
+  }
+
+  function datesIn(line, today) {
+    const out = [];
+    const ok = (y, mo, d) => {
+      if (y < 100) y += 2000;
+      if (mo < 1 || mo > 12 || d < 1 || d > 31 || y < 2000 || y > 2100) return;
+      const iso = `${y}-${pad(mo)}-${pad(Math.min(d, daysInMonth(`${y}-${pad(mo)}`)))}`;
+      if (today && (iso < addMonths(monthKey(today), -24) + '-01' || iso > addMonths(monthKey(today), 13) + '-01')) return;
+      out.push(iso);
+    };
+    let m;
+    const num = /(\d{1,4})[/\-.](\d{1,2})[/\-.](\d{2,4})/g;
+    while ((m = num.exec(line))) {
+      const [a, b, c] = [Number(m[1]), Number(m[2]), Number(m[3])];
+      if (m[1].length === 4) ok(a, b, c); else ok(c, b, a);
+    }
+    const txt = /(\d{1,2})\s*(?:de\s*|[-/.\s])?([a-záéíóú]{3,10})\.?\s*(?:de\s*|[-/.,\s])\s*(\d{2,4})/gi;
+    while ((m = txt.exec(line))) {
+      const mo = MONTHS_RE[norm(m[2]).slice(0, 3)];
+      if (mo) ok(Number(m[3]), mo, Number(m[1]));
+    }
+    return out;
+  }
+
+  function parseReceipt(text, mode = 'ticket', today = null) {
+    const raw = String(text || '').split(/\r?\n/).map((l) => l.replace(/\s+/g, ' ').trim()).filter(Boolean);
+    const lines = raw.map(fixDigits);
+
+    // Total: la palabra más específica gana; el monto está en la línea o en las dos siguientes.
     let total = 0;
-    const totalLine = [...lines].reverse().find((l) => /total/i.test(l) && !/sub\s*-?total/i.test(l) && amountsIn(l).length);
-    if (totalLine) total = Math.max(...amountsIn(totalLine));
-    if (!total) total = Math.max(0, ...lines.flatMap((l) => amountsIn(l).filter((n) => n < 1e9)));
-    const dateMatch = lines.map((l) => cellToISO(l)).find(Boolean) || null;
+    for (const key of TOTAL_KEYS) {
+      const found = [];
+      lines.forEach((l, i) => {
+        if (!key.test(l) || NOT_TOTAL.test(l)) return;
+        let amounts = moneyIn(l);
+        for (let j = 1; !amounts.length && j <= 2 && lines[i + j]; j++) {
+          if (NOT_AMOUNT.test(lines[i + j]) || NOT_TOTAL.test(lines[i + j])) continue;
+          amounts = moneyIn(lines[i + j]);
+        }
+        if (amounts.length) found.push(amounts[amounts.length - 1].n);
+      });
+      if (found.length) { total = Math.max(...found); break; }
+    }
+    // Sin palabra de total: el monto más alto que tenga formato de plata ($ o miles), fuera de líneas de códigos.
+    if (!total) {
+      const cands = lines.filter((l) => !NOT_AMOUNT.test(l) && !NOT_TOTAL.test(l)).flatMap(moneyIn).filter((a) => a.strong).map((a) => a.n);
+      if (cands.length) total = Math.max(...cands);
+    }
+
+    // Fecha: en facturas, la de «pague hasta» o la más lejana; en tickets, la de la línea «fecha» o la primera.
+    let date = null;
+    const near = (re) => {
+      for (let i = 0; i < lines.length; i++) {
+        if (!re.test(lines[i])) continue;
+        const d = datesIn(lines[i], today).concat(lines[i + 1] ? datesIn(lines[i + 1], today) : []);
+        if (d.length) return d[0];
+      }
+      return null;
+    };
+    const all = lines.flatMap((l) => datesIn(l, today));
+    if (mode === 'factura') date = near(DUE_KEYS) || (all.length ? all.slice().sort().pop() : null);
+    else date = near(/fecha/i) || all[0] || null;
+
+    // Comercio: entre las primeras líneas, la primera con mayoría de letras que no sea un dato fiscal.
+    const merchantLine = raw.slice(0, 8).find((l) => {
+      const letters = (l.match(/[a-záéíóúñ]/gi) || []).length;
+      return letters >= 3 && letters / l.replace(/\s/g, '').length > 0.6 && !NOT_AMOUNT.test(l)
+        && !/r[eé]gimen|responsable|iva|factura|ticket|recibo|bienvenid|gracias|original|copia/i.test(l);
+    }) || '';
+    const merchant = merchantLine.replace(/[^\wáéíóúñÁÉÍÓÚÑ&.' -]/g, '').replace(/\s{2,}/g, ' ').trim().slice(0, 40);
+
     let cat = null;
     let sub = '';
-    for (const [re, c, s] of CATEGORY_HINTS) {
-      if (re.test(text)) { cat = c; sub = s; break; }
+    const joined = lines.join('\n');
+    for (const [re, c, sb] of CATEGORY_HINTS) {
+      if (re.test(joined)) { cat = c; sub = sb; break; }
     }
-    return { merchant, total: Math.round(total), date: dateMatch, cat, sub };
+    return { merchant, total: Math.round(total), date, cat, sub };
   }
 
   // ---------- Estado ----------
