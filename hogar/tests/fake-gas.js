@@ -22,6 +22,7 @@ class FakeRange {
     return out;
   }
   getValue() { return this.getValues()[0][0]; }
+  getFormulas() { return this.getValues().map((r) => r.map(() => '')); }
   setValues(values) {
     values.forEach((line, r) => line.forEach((v, c) => this.sheet.set(this.row + r, this.col + c, v)));
     return this;
@@ -157,7 +158,8 @@ function createGas(tables, opts = {}) {
       getOAuthToken: () => 'tok-oauth',
       getProjectTriggers: () => triggers.map((fn) => ({ getHandlerFunction: () => fn })),
       deleteTrigger: (tr) => { triggers.splice(triggers.indexOf(tr.getHandlerFunction()), 1); },
-      newTrigger: (fn) => ({ timeBased() { return this; }, everyHours() { return this; }, everyDays() { return this; }, atHour() { return this; }, create() { triggers.push(fn); } }),
+      newTrigger: (fn) => ({ timeBased() { return this; }, everyHours() { return this; }, everyDays() { return this; }, atHour() { return this; },
+        forSpreadsheet() { return this; }, onChange() { return this; }, create() { triggers.push(fn); } }),
     },
     UrlFetchApp: {
       fetch: (url, o = {}) => {

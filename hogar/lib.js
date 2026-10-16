@@ -163,6 +163,8 @@
     const threshold = state.settings.threshold;
     const dim = daysInMonth(key);
     const elapsed = elapsedDays(key, today);
+    // Con la planilla, cada mes usa su propio presupuesto (o el del mismo mes del año anterior).
+    const monthLimits = state.budgetRows && state.budgetRows.length ? budgetLimits(state.budgetRows, key, rates) : null;
     return state.categories.map((c) => {
       const movs = state.movements.filter((m) => m.type === 'exp' && m.cat === c.name && monthKey(m.date) === key);
       const bills = state.bills.filter((b) => b.cat === c.name && monthKey(b.due) === key);
@@ -171,7 +173,7 @@
       const allBills = bills.reduce((s, b) => s + toCOP(b, rates), 0);
       const spent = variable + paidBills;
       const projection = (elapsed ? (variable / elapsed) * dim : 0) + allBills;
-      const limit = Number(c.limit) || 0;
+      const limit = monthLimits ? Math.round(monthLimits[c.group] || 0) : Number(c.limit) || 0;
       const pct = limit ? (spent / limit) * 100 : 0;
       const projPct = limit ? (projection / limit) * 100 : 0;
       let status = 'ok';
@@ -369,6 +371,7 @@
     if (last) return last.balance;
     if (rows.length && rows.every((c) => c.due > end)) {
       const first = rows.reduce((a, c) => (c.due < a.due ? c : a));
+      if (first.n <= 1) return 0; // el préstamo todavía no existía
       return first.balance + first.principal; // saldo antes de la primera cuota de la ventana
     }
     return today && key === monthKey(today) && loan.balance != null ? loan.balance : null;
@@ -399,6 +402,18 @@
     }
     const financial = [];
     let principal = 0;
+    // Préstamos sin tabla de cuotas para el mes: interés estimado con la tasa y el saldo, o la cuota entera si no hay tasa.
+    for (const b of state.bills) {
+      if (!b.loanId || !inMonth(b.due)) continue;
+      if ((state.schedule || []).some((c) => c.loanId === b.loanId && inMonth(c.due))) continue;
+      const loan = state.loans.find((l) => l.id === b.loanId) || {};
+      let rate = Number(loan.rate) || 0;
+      if (rate > 3) rate /= 100;
+      const cuota = toCOP(b, rates);
+      const interest = rate && loan.balance ? Math.min(cuota, convert((loan.balance * rate) / 12, loan.cur || b.cur, 'COP', rates)) : cuota;
+      financial.push({ name: b.name, interest, other: 0, estimated: true });
+      principal += cuota - interest;
+    }
     for (const c of state.schedule || []) {
       if (!inMonth(c.due)) continue;
       const loan = state.loans.find((l) => l.id === c.loanId);
@@ -428,7 +443,8 @@
       if (!b) { missing.push(a); continue; }
       groups[kindClass(a.kind)].push({ id: a.id, name: a.name, amount: convert(b.amount, a.cur, 'COP', rates), month: b.month, stale: b.month !== key });
     }
-    const receivables = state.receivables.filter((r) => (r.issued || r.due) <= end && !(r.collected && (r.collectedAt || '') <= end))
+    const collectedOn = (r) => r.collectedAt || (state.movements.find((m) => m.id === r.incomeId) || {}).date || '9999-12-31';
+    const receivables = state.receivables.filter((r) => (r.issued || r.due) <= end && !(r.collected && collectedOn(r) <= end))
       .map((r) => ({ name: r.client, amount: toCOP(r, rates) }));
     const loans = [];
     const noData = [];
@@ -545,16 +561,21 @@
       const incomes = (events.get(start) || []).map((e) => ({
         ...e, received: state.movements.some((m) => m.type === 'inc' && m.cat === e.cat && m.date >= start && m.date <= last),
       }));
-      const bills = state.bills.filter((b) => b.due >= start && b.due <= last).sort((a, b) => a.due.localeCompare(b.due))
-        .map((b) => ({ id: b.id, name: b.name, due: b.due, amount: toCOP(b, rates), paid: b.paid }));
-      const fromDay = current ? today : start;
+      // En el tramo actual entran también las facturas vencidas antes y sin pagar.
+      const bills = state.bills.filter((b) => (b.due >= start && b.due <= last) || (current && !b.paid && b.due < start))
+        .sort((a, b) => a.due.localeCompare(b.due))
+        .map((b) => ({ id: b.id, name: b.name, due: b.due, amount: toCOP(b, rates), paid: b.paid, overdue: !b.paid && b.due < start }));
+      const fromDay = current ? toISO(new Date(parseISO(today).getTime() + 86400000)) : start;
       const days = Math.max(0, daysBetween(fromDay, last) + 1);
       const income = incomes.reduce((s, e) => s + e.amount, 0);
       const toPay = bills.filter((b) => !b.paid).reduce((s, b) => s + b.amount, 0);
+      // Lo que ya salió en el tramo actual: gastos cargados y facturas pagadas desde el cobro hasta hoy.
+      const spent = current ? state.movements.filter((m) => m.type === 'exp' && m.date >= start && m.date <= today).reduce((s, m) => s + toCOP(m, rates), 0)
+        + state.bills.filter((b) => b.paid && (b.paidAt || b.due) >= start && (b.paidAt || b.due) <= today).reduce((s, b) => s + toCOP(b, rates), 0) : 0;
       const variable = perDay * days;
-      const free = income - toPay - variable;
+      const free = income - spent - toPay - variable;
       carry += free;
-      return { start, end: last, current, incomes, bills, income, toPay, variable, days, free, cumulative: carry };
+      return { start, end: last, current, incomes, bills, income, spent, toPay, variable, days, free, cumulative: carry };
     }).filter((p) => p.end >= today);
     return { periods, inferred: !configured.length, plan, perDay };
   }
@@ -586,7 +607,7 @@
         || (state.schedule || []).find((c) => c.loanId === l.id && monthKey(c.due) === key);
       const pay = row ? row.interest + row.principal : l.installment;
       let rate = Number(l.rate) || 0;
-      if (rate > 1) rate /= 100;
+      if (rate > 3) rate /= 100; // «17» es 17 %; 1,2 es 120 % (TNA de préstamos en pesos argentinos)
       loans.push({ id: l.id, name: l.name, cur: l.cur, rate, balance: convert(bal, l.cur, 'COP', rates), payment: Math.max(0, convert(pay, l.cur, 'COP', rates)) });
     }
     const simulate = (extra, strategy, rollover) => {
@@ -602,7 +623,7 @@
           interest += i;
           const p = Math.min(x.bal, x.payment);
           x.bal -= p;
-          if (x.payment > x.bal + p) pool += x.payment - p; // lo que sobró de la última cuota
+          if (rollover && x.payment > p) pool += x.payment - p; // lo que sobró de la última cuota
           if (x.bal < 1) { x.bal = 0; x.done = m; }
         }
         const order = st.filter((x) => x.done == null)
@@ -658,7 +679,7 @@
       .forEach((s) => out.push({ kind: 'cat', id: s.name, tone: 'amber', title: `${s.name} al ${Math.round(s.pct)}%`, sub: `Quedan ${money(s.limit - s.spent)}` }));
     stats.filter((s) => s.status === 'proj')
       .forEach((s) => out.push({ kind: 'cat', id: s.name, tone: 'amber', title: `${s.name} podría excederse`, sub: `Proyección ${Math.round(s.projPct)}% al cierre del mes` }));
-    state.receivables.filter((r) => !r.collected && r.due < today)
+    state.receivables.filter((r) => !r.collected && r.due && r.due < today)
       .forEach((r) => out.push({ kind: 'recv', id: r.id, tone: 'neutral', title: `Por cobrar: ${r.client}`, sub: `Venció hace ${daysBetween(r.due, today)} días · ${money(toCOP(r, rates))}` }));
     return out;
   }
@@ -701,7 +722,8 @@
   const TYPE_LABEL = { exp: 'Gasto', inc: 'Ingreso', save: 'Ahorro' };
 
   function toCSV(state) {
-    const q = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
+    // Un texto que empieza con = + - @ se abriría como fórmula en Excel: se le antepone un apóstrofo.
+    const q = (v) => `"${(typeof v === 'string' && /^[=+\-@\t\r]/.test(v) ? "'" + v : String(v ?? '')).replace(/"/g, '""')}"`;
     const rows = [['Fecha', 'Tipo', 'Categoría', 'Subcategoría', 'Descripción', 'Moneda', 'Importe', 'Medio de pago', 'Persona']];
     for (const m of [...state.movements].sort((a, b) => a.date.localeCompare(b.date))) {
       rows.push([m.date, TYPE_LABEL[m.type] || 'Gasto', m.cat, m.sub, m.note, m.cur, m.amount, m.method, personOf(m)]);
@@ -922,13 +944,11 @@
     ['2ª Vivienda', '2ª Vivienda', 500000, ['Expensas', 'Servicios', 'Mantenimiento']],
   ];
 
-  // Cuotas de la hoja "Deudas" (vencimientos de octubre 2026).
+  // Préstamos de ejemplo (montos ficticios; los reales viven solo en la planilla).
   const LOANS = [
-    ['Hipoteca N°1', 'COP', 1551582, 8, 'Hipoteca'],
-    ['Hipoteca N°2', 'COP', 1763226, 26, 'Hipoteca'],
-    ['Préstamo N°1', 'ARS', 173089, 10, 'Préstamo'],
-    ['Préstamo N°2', 'ARS', 127592, 10, 'Préstamo'],
-    ['Préstamo N°3', 'COP', 1162496, 30, 'Préstamo'],
+    ['Hipoteca de ejemplo', 'COP', 1500000, 8, 'Hipoteca'],
+    ['Préstamo de ejemplo', 'ARS', 150000, 10, 'Préstamo'],
+    ['Crédito de ejemplo', 'COP', 1000000, 30, 'Préstamo'],
   ];
 
   function baseState(today) {
@@ -982,15 +1002,15 @@
     rec('Honorarios', 'Otros gastos', 'Honorarios', 300000, 25);
     rec('Celular', 'Gastos fijos', 'Celular', 89000, 18);
     ensureRecurring(s, key);
-    // Pagadas las vencidas, salvo los préstamos N°1 y N°2 (ejemplo de alerta).
+    // Pagadas las vencidas, salvo el préstamo de ejemplo (para mostrar una alerta).
     for (const b of s.bills) {
-      if (b.due < today && !/Préstamo N°[12]/.test(b.name)) { b.paid = true; b.method = 'Transferencia'; }
+      if (b.due < today && b.name !== 'Préstamo de ejemplo') { b.paid = true; b.method = 'Transferencia'; }
     }
     const mov = (d, type, cat, sub, note, amount, method, cur = 'COP') => {
       if (d <= td) s.movements.push({ id: uid(), date: `${key}-${pad(d)}`, type, cat, sub, note, amount, cur, method, sample: true });
     };
-    mov(1, 'inc', 'Sueldo Alan', '', 'Sueldo octubre', 9800000, 'Transferencia');
-    mov(1, 'inc', 'Sueldo Karo', '', 'Sueldo octubre', 7600000, 'Transferencia');
+    mov(1, 'inc', 'Sueldo Alan', '', 'Sueldo octubre', 8000000, 'Transferencia');
+    mov(1, 'inc', 'Sueldo Karo', '', 'Sueldo octubre', 6000000, 'Transferencia');
     mov(2, 'exp', 'Alimentación', 'Supermercado', 'Compra del mes', 980000, 'Tarjeta Crédito');
     mov(3, 'exp', 'Transporte', 'Combustible', 'Tanqueo', 210000, 'Tarjeta Débito');
     mov(4, 'exp', 'Ocio', 'Salidas', 'Cena con amigos', 320000, 'Tarjeta Crédito');
@@ -1102,7 +1122,8 @@
       if (!groups.has(cat)) groups.set(cat, []);
       if (sub && !groups.get(cat).includes(sub)) groups.get(cat).push(sub);
     }
-    const limits = budgetLimits(t('Presupuesto'), monthKey(today), s.settings.rates);
+    s.budgetRows = t('Presupuesto').map((r) => ({ 'Mes': str(r['Mes']), 'Categoría': str(r['Categoría']), 'Moneda': str(r['Moneda']), 'Importe': num(r['Importe']) }));
+    const limits = budgetLimits(s.budgetRows, monthKey(today), s.settings.rates);
     s.categories = [...groups].map(([code, subs]) => ({ name: label(code), group: code, limit: Math.round(limits[code] || 0), subs }));
     if (incomes.length) s.incomeCats = incomes;
     const methods = t('Listas').map((r) => str(r['Medio de pago'])).filter(Boolean);
@@ -1150,6 +1171,7 @@
     s.recurring = t('Recurrentes').filter((r) => r['ID'] && str(r['Activa']) !== 'No').map((r) => ({
       id: str(r['ID']), name: str(r['Nombre']), cat: label(r['Categoría']), sub: str(r['Subcategoría']),
       amount: num(r['Importe']), cur: str(r['Moneda']) || 'COP', day: num(r['Día']) || 1, alerts: parseAlerts(r['Avisos (días antes)']),
+      ...(str(r['Desde']) ? { startMonth: str(r['Desde']).slice(0, 7) } : {}),
     }));
     s.receivables = t('Por cobrar').filter((r) => r['ID']).map((r) => ({
       id: str(r['ID']), client: str(r['Cliente']), issued: str(r['Fecha de emisión']) || null, due: str(r['Vence']),
@@ -1213,6 +1235,7 @@
       'Recurrentes': s.recurring.filter((r) => !r.loanId).map((r) => ({
         'ID': r.id, 'Nombre': r.name, 'Categoría': code(r.cat), 'Subcategoría': r.sub || '', 'Moneda': r.cur,
         'Importe': r.amount, 'Día': r.day, 'Avisos (días antes)': alerts(r.alerts), 'Activa': 'Sí',
+        ...(r.startMonth ? { 'Desde': r.startMonth } : {}),
       })),
       'Por cobrar': s.receivables.map((r) => ({
         'ID': r.id, 'Fecha de emisión': r.issued || '', 'Cliente': r.client, 'Moneda': r.cur, 'Valor': r.amount, 'Vence': r.due,
@@ -1249,7 +1272,13 @@
         const k = rowKey(table, row);
         seen.add(k);
         const old = before.get(k);
-        if (!old || !sameRow(old, row)) ops.push({ table, op: 'upsert', row });
+        if (!old) { ops.push({ table, op: 'upsert', row }); continue; }
+        if (sameRow(old, row)) continue;
+        // Fila existente: solo la clave y lo que cambió, así no se pisan los cambios del otro en otras columnas.
+        const part = {};
+        for (const kc of ROW_KEYS[table] || ['ID']) part[kc] = row[kc];
+        for (const c of Object.keys(row)) if (JSON.stringify(old[c] ?? '') !== JSON.stringify(row[c] ?? '')) part[c] = row[c];
+        ops.push({ table, op: 'upsert', row: part });
       }
       for (const r of (prev && prev[table]) || []) {
         if (!seen.has(rowKey(table, r))) ops.push({ table, op: 'delete', row: r });
