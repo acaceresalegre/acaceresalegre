@@ -44,6 +44,8 @@
     dashMonth: null, // mes del dashboard (null = mes actual)
     balMonth: null, // mes del balance (null = mes anterior, el último cerrado)
     balView: 'res', // en el celular: res | pat | flujo
+    debtExtra: 0,
+    debtStrategy: 'avalanche',
     mov: { q: '', period: 'month', month: null, type: 'all', cat: '', method: '', person: '', sort: 'date', dir: 'desc', limit: 100 },
     sheet: null, // { render, mount }
   };
@@ -324,9 +326,10 @@
     const sub = `${pending.length} por pagar · ${money(pending.reduce((s, b) => s + cop(b), 0))}`;
     const seg = `<div class="seg wide">
       <button class="${ui.vencMode === 'pay' ? 'on' : ''}" data-act="venc-mode" data-v="pay">Por pagar</button>
+      <button class="${ui.vencMode === 'plan' ? 'on' : ''}" data-act="venc-mode" data-v="plan">Plan por cobro</button>
       <button class="${ui.vencMode === 'collect' ? 'on' : ''}" data-act="venc-mode" data-v="collect">Por cobrar</button>
     </div>`;
-    return header(sub, 'Vencimientos') + seg + (ui.vencMode === 'pay' ? renderPorPagar() : renderPorCobrar());
+    return header(sub, 'Vencimientos') + seg + (ui.vencMode === 'pay' ? renderPorPagar() : ui.vencMode === 'plan' ? renderPlanCobro() : renderPorCobrar());
   }
 
   function renderPorPagar() {
@@ -371,6 +374,72 @@
       </div></div>
       <div>${list}
       <button class="dashed" data-act="add" data-v="bill">+ Nueva factura</button></div></div>`;
+  }
+
+  // --- Plan por cobro: de un sueldo al siguiente, ¿alcanza? ---
+  const dm = (iso) => `${L.dayOf(iso)} ${L.MON[Number(iso.slice(5, 7)) - 1]}`;
+  function renderPlanCobro() {
+    const p = L.paycheckPlan(state, today);
+    if (!p.periods.length) {
+      return `<div class="card empty" style="margin-top:16px">Todavía no sabemos cuándo cobran. Configurá los sueldos y otros cobros fijos para armar el plan.</div>
+        <button class="primary" data-act="income-plan">Configurar cobros</button>`;
+    }
+    const cards = p.periods.map((x) => {
+      const range = x.start === x.end ? dm(x.start) : `${dm(x.start)} al ${dm(x.end)}`;
+      return `<section class="card r20 stmt pay-period ${x.current ? 'current' : ''}">
+        <div class="sec-head"><h2>${x.current ? 'Ahora · ' : ''}${esc(range)}</h2>${x.free < 0 ? '<span class="chip red">No alcanza</span>' : x.free < x.income * 0.1 ? '<span class="chip amber">Justo</span>' : '<span class="chip green">Alcanza</span>'}</div>
+        ${x.incomes.map((e) => line(`${esc(e.name)}${e.received ? ' <small>cobrado</small>' : ''}`, e.amount, 'ind')).join('') || '<div class="st-row ind muted"><span>Sin cobros en este tramo</span><b>—</b></div>'}
+        ${x.bills.map((b) => line(`<button class="link" data-act="bill" data-id="${esc(b.id)}">${esc(b.name)}</button> <small>${esc(dm(b.due))}${b.paid ? ' · pagada' : ''}</small>`, b.paid ? null : -b.amount, 'ind' + (b.paid ? ' muted' : ''))).join('')}
+        ${line(`Gastos del día a día <small>${x.days} día${x.days === 1 ? '' : 's'}${x.current ? ' que quedan' : ''}</small>`, -x.variable, 'ind')}
+        ${line(x.current ? 'Libre en lo que queda del tramo' : 'Libre en el tramo', x.free, 'total ' + (x.free < 0 ? 'tone-red' : ''))}
+        <div class="st-note">Acumulado desde hoy: <b class="${x.cumulative < 0 ? 'tone-red' : ''}">${esc(money(x.cumulative))}</b></div>
+      </section>`;
+    }).join('');
+    return `<div class="notice ${p.inferred ? 'amber' : ''}" style="margin:14px 0">${p.inferred
+      ? 'Cobros estimados con los ingresos de los últimos 3 meses. Configuralos para que el plan sea exacto.'
+      : 'Facturas por pagar y gastos del día a día de cada tramo entre cobros.'}
+        Gastos del día a día: ${esc(money(p.perDay))} por día (promedio de los últimos 90 días).</div>
+      <div class="pay-grid">${cards}</div>
+      <button class="dashed" data-act="income-plan">${p.inferred ? 'Configurar cobros' : 'Editar cobros'}</button>`;
+  }
+
+  // --- Configurar cobros esperados ---
+  let incForm = null;
+  function openIncomePlan() {
+    const base = (state.incomePlan || []).length ? state.incomePlan : L.inferIncomePlan(state, today);
+    incForm = base.map((p) => ({ id: p.inferred ? null : p.id, name: p.name, cat: p.cat, cur: p.cur, digits: String(Math.round(p.amount)), days: p.days.join(', ') }));
+    if (!incForm.length) incForm.push({ id: null, name: state.incomeCats[0], cat: state.incomeCats[0], cur: 'COP', digits: '', days: '' });
+    openSheet(() => `<h3>Cobros esperados</h3>
+      <p class="lead">Sueldos y otros ingresos fijos, con el día del mes en que llegan. Para la quincena poné «15, 30».</p>
+      ${incForm.map((f, i) => `<div class="card inc-row">
+        <div class="pills scroll">${pills(state.incomeCats.map((c) => [c, c]), (v) => v === f.cat, 'inc-cat', `data-i="${i}"`)}</div>
+        <div class="inc-fields">
+          <div class="amount-row small"><span class="cur">$</span><input data-inc="${i}" data-k="digits" inputmode="numeric" placeholder="Monto" value="${L.groupDigits(f.digits)}" aria-label="Monto"></div>
+          <input class="input" data-inc="${i}" data-k="days" inputmode="numeric" placeholder="Días: 15, 30" value="${esc(f.days)}" aria-label="Días de cobro">
+        </div>
+        <button class="danger-link" data-act="inc-del" data-v="${i}">Quitar</button>
+      </div>`).join('')}
+      <button class="pill" data-act="inc-add">+ Otro cobro</button>
+      <button class="primary" data-act="inc-save">Guardar cobros</button>`,
+    (sheet) => {
+      sheet.querySelectorAll('[data-inc]').forEach((el) => {
+        el.oninput = () => {
+          const f = incForm[Number(el.dataset.inc)];
+          if (el.dataset.k === 'digits') { f.digits = L.cleanDigits(el.value); el.value = L.groupDigits(f.digits); } else f.days = el.value;
+        };
+      });
+    });
+  }
+
+  function saveIncomePlan() {
+    const next = incForm.filter((f) => Number(f.digits) && L.parseDays(f.days).length)
+      .map((f) => ({ id: f.id || L.uid(), name: f.cat, cat: f.cat, cur: f.cur || 'COP', amount: Number(f.digits), days: L.parseDays(f.days) }));
+    if (incForm.some((f) => Number(f.digits) && !L.parseDays(f.days).length)) return toast('Falta el día de cobro en algún ingreso', 'red');
+    state.incomePlan = next;
+    incForm = null;
+    closeSheet();
+    toast(`${next.length} cobro${next.length === 1 ? '' : 's'} guardado${next.length === 1 ? '' : 's'}`, 'green');
+    save();
   }
 
   function renderPorCobrar() {
@@ -554,7 +623,42 @@
         <div class="line"><span>Pagadas</span><b>${paid} de ${loans.length}</b></div>
       </section>
       <div class="stack loan-grid" style="margin-top:12px">${cards || '<div class="card empty">No hay préstamos cargados</div>'}</div>
-      ${state.synced ? '' : '<button class="dashed" data-act="loan-new">+ Nuevo préstamo</button>'}`;
+      ${state.synced ? '' : '<button class="dashed" data-act="loan-new">+ Nuevo préstamo</button>'}
+      ${loans.length ? debtPlanCard() : ''}`;
+  }
+
+  // --- Plan para salir de las deudas ---
+  function debtPlanCard() {
+    return `<section class="card r20 stmt" style="margin-top:16px">
+      <div class="sec-head"><h2>Plan para salir de las deudas</h2></div>
+      <p class="st-note" style="margin-top:0">¿Qué pasa si sumás un pago extra por mes? Cuando un préstamo termina, su cuota se suma al extra.</p>
+      <div class="debt-inputs">
+        <div class="amount-row small"><span class="cur">$</span><input id="debt-extra" inputmode="numeric" placeholder="Pago extra por mes" value="${L.groupDigits(String(ui.debtExtra || ''))}" aria-label="Pago extra por mes"></div>
+        <div class="seg">${[['avalanche', 'Avalancha'], ['snowball', 'Bola de nieve']].map(([v, l]) => `<button class="${ui.debtStrategy === v ? 'on' : ''}" data-act="debt-strategy" data-v="${v}">${l}</button>`).join('')}</div>
+      </div>
+      <div id="debt-plan">${debtPlanResults()}</div>
+    </section>`;
+  }
+
+  function debtPlanResults() {
+    const p = L.debtPlan(state, today, { extra: ui.debtExtra, strategy: ui.debtStrategy });
+    if (!p.loans.length) return '<div class="empty">No hay saldos de préstamos para simular.</div>';
+    const end = (k) => (k ? cap(monthTxt(k)) : 'No termina');
+    const byOrder = p.order.map((id) => p.loans.find((l) => l.id === id));
+    const rate = (l) => (l.rate ? (l.rate * 100).toFixed(1).replace('.', ',') + '%' : 'sin tasa');
+    return `<div class="debt-list">${byOrder.map((l, i) => `<div class="debt-row">
+        <span class="n">${i + 1}</span>
+        <span class="grow"><b>${esc(l.name)}</b><small>${esc(short(l.balance))} · ${rate(l)}</small></span>
+        <span class="when"><small>Hoy</small>${esc(end(l.baseEnd))}</span>
+        <span class="when"><small>Con el plan</small><b class="${l.planEnd && l.planEnd !== l.baseEnd ? 'tone-green' : ''}">${esc(end(l.planEnd))}</b></span>
+      </div>`).join('')}</div>
+      ${p.baseInterest != null ? line('Intereses que pagarías hoy', p.baseInterest, 'ind') : ''}
+      ${p.planInterest != null && p.extra ? line('Intereses con el plan', p.planInterest, 'ind') : ''}
+      ${p.saved != null && p.extra ? line('Ahorro en intereses', p.saved, 'total ' + (p.saved > 0 ? 'tone-green' : '')) : ''}
+      ${p.endless.length ? `<div class="notice amber" style="margin-top:12px">${esc(p.endless.join(', '))}: con la cuota actual no se termina${p.endless.length > 1 ? 'n' : ''} nunca (la cuota no cubre el interés)${p.planEnd ? `; con el plan, sí: ${esc(monthTxt(p.planEnd))}` : ''}.</div>` : ''}
+      <div class="st-note">${p.extra ? `${p.planEnd ? `Sin deudas en <b>${esc(monthTxt(p.planEnd))}</b>` : 'Con este extra no se terminan todas'}${p.monthsSaved ? `, ${p.monthsSaved} mes${p.monthsSaved === 1 ? '' : 'es'} antes` : ''}. ` : 'Escribí un pago extra para ver cuánto se adelanta. '}
+        ${ui.debtStrategy === 'snowball' ? 'Bola de nieve: primero la de menor saldo, para cerrar préstamos rápido.' : 'Avalancha: primero la de mayor tasa, la que más interés ahorra.'}
+        Se simula con la tasa (TNA) de la pestaña Deudas y la cuota sin seguros, en ${esc(dc())} al cambio de hoy.</div>`;
   }
 
   // ---------- Pantalla: Metas ----------
@@ -777,6 +881,14 @@
     </div>`;
   }
 
+  function worthCard(key) {
+    return `<div class="card r20">
+      <div class="sec-head"><h2>Evolución del patrimonio</h2></div>
+      <div class="viz-legend"><span><i class="ln net"></i>Patrimonio neto</span><span><i class="ln inc"></i>Activos</span><span><i class="ln exp"></i>Pasivos</span></div>
+      <div class="chart-box" data-chart="networth" data-key="${key}"></div>
+    </div>`;
+  }
+
   function renderBalance() {
     const key = balKey();
     const nav = `<div class="filters">
@@ -785,14 +897,14 @@
     if (isDesktop()) {
       return header('Estados del hogar', 'Balance') + nav + `
         <div class="dash bal-grid">
-          <section class="span-6">${resultsCard(key)}</section>
+          <section class="span-6 stack">${resultsCard(key)}${worthCard(key)}</section>
           <section class="span-6 stack">${patrimonyCard(key)}${flowCard(key)}</section>
         </div>`;
     }
     const views = [['res', 'Resultados'], ['pat', 'Patrimonio'], ['flujo', 'Flujo']];
     return header('Estados del hogar', 'Balance') + patSeg() + nav + `
       <div class="seg wide" style="margin-bottom:12px">${views.map(([v, l]) => `<button class="${ui.balView === v ? 'on' : ''}" data-act="bal-view" data-v="${v}">${l}</button>`).join('')}</div>
-      ${ui.balView === 'pat' ? patrimonyCard(key) : ui.balView === 'flujo' ? flowCard(key) : resultsCard(key)}`;
+      ${ui.balView === 'pat' ? worthCard(key) + '<div style="height:12px"></div>' + patrimonyCard(key) : ui.balView === 'flujo' ? flowCard(key) : resultsCard(key)}`;
   }
 
   // --- Cuentas y bienes ---
@@ -994,6 +1106,15 @@
           ...d, lastDay, showProjection: key === curMonth, width, fmtAxis, fmtVal, fmtLabel: (v) => short(v),
           dayLabel: (n, long) => (long ? cap(L.longDate(`${key}-${String(n).padStart(2, '0')}`)) : String(n)),
         });
+      } else if (box.dataset.chart === 'networth') {
+        const pts = L.netWorthSeries(state, box.dataset.key, 12, today).map((x) => ({
+          key: x.key, label: shortMonth(x.key), title: monthTitle(x.key), hasData: x.hasData,
+          values: { net: x.net, assets: x.assets, liabilities: -x.liabilities },
+        }));
+        res = pts.some((x) => x.hasData) ? C.lines({ points: pts, width, fmtAxis, fmtVal, series: [
+          { k: 'assets', label: 'Activos', cls: 'inc', tip: 'inc' }, { k: 'liabilities', label: 'Pasivos', cls: 'exp', tip: 'exp' },
+          { k: 'net', label: 'Patrimonio neto', cls: 'net', tip: 'ref', strong: true }] })
+          : { svg: '<div class="empty">Cargá los saldos de tus cuentas y bienes para ver la evolución.</div>' };
       } else if (box.dataset.chart === 'categories') {
         const rows = L.categoryStats(state, key, today).filter((c) => c.spent > 0 || c.limit > 0)
           .sort((a, b) => b.spent - a.spent || b.limit - a.limit).map((c) => ({ name: c.name, spent: c.spent, limit: c.limit }));
@@ -1954,6 +2075,12 @@
       else { closeSheet(); ui.tab = 'vencimientos'; ui.vencMode = 'collect'; renderScreen(); window.scrollTo(0, 0); }
     },
     'venc-mode': (d) => { ui.vencMode = d.v; renderScreen(); },
+    'income-plan': () => openIncomePlan(),
+    'inc-cat': (d) => { const f = incForm[Number(d.i)]; f.cat = d.v; f.name = d.v; renderSheet(); },
+    'inc-add': () => { incForm.push({ id: null, name: state.incomeCats[0], cat: state.incomeCats[0], cur: 'COP', digits: '', days: '' }); renderSheet(); },
+    'inc-del': (d) => { incForm.splice(Number(d.v), 1); renderSheet(); },
+    'inc-save': () => saveIncomePlan(),
+    'debt-strategy': (d) => { ui.debtStrategy = d.v; renderScreen(); },
     'cal-month': (d) => { ui.vencMonth = L.addMonths(ui.vencMonth, Number(d.v)); ui.selDay = null; renderScreen(); },
     day: (d) => { ui.selDay = d.v && d.v !== ui.selDay ? d.v : null; renderScreen(); },
     'bud-mode': (d) => { ui.budMode = d.v; renderScreen(); },
@@ -2116,6 +2243,13 @@
   // Filtros de Movimientos: solo se vuelve a dibujar la tabla, así el buscador no pierde el foco.
   document.addEventListener('input', (e) => {
     if (e.target.id === 'mov-q') { ui.mov.q = e.target.value; ui.mov.limit = 100; refreshMovResults(); }
+    if (e.target.id === 'debt-extra') {
+      const digits = L.cleanDigits(e.target.value);
+      e.target.value = L.groupDigits(digits);
+      ui.debtExtra = Number(digits) || 0;
+      const box = $('#debt-plan');
+      if (box) box.innerHTML = debtPlanResults();
+    }
   });
   document.addEventListener('change', (e) => {
     const map = { 'mov-period': 'period', 'mov-type': 'type', 'mov-cat': 'cat', 'mov-method': 'method', 'mov-person': 'person' };

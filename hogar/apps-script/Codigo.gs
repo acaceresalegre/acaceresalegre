@@ -49,6 +49,13 @@ var TABLES = {
     softDelete: { column: 'Activa', value: 'No' },
     headers: ['ID', 'Nombre', 'Tipo', 'Moneda', 'Activa', 'Comentarios', 'Actualizado'],
   },
+  // Sueldos y otros cobros que se esperan cada mes (Días de cobro: «15, 30» para una quincena).
+  'Ingresos esperados': {
+    key: ['ID'], dates: [], optional: true,
+    text: ['ID', 'Nombre', 'Subcategoría', 'Moneda', 'Días de cobro', 'Activa'],
+    softDelete: { column: 'Activa', value: 'No' },
+    headers: ['ID', 'Nombre', 'Subcategoría', 'Moneda', 'Importe', 'Días de cobro', 'Activa', 'Actualizado'],
+  },
   // Saldo de cierre de cada cuenta o bien por mes (Mes = día 1 del mes).
   'Saldos': {
     key: ['Cuenta ID', 'Mes'], dates: ['Mes'], optional: true,
@@ -58,7 +65,7 @@ var TABLES = {
   // Solo lectura y recortada a una ventana de meses (ver pullPayload): amortización, interés y saldo de cada cuota.
   'Cuotas': { readOnly: true, dates: ['Vencimiento'], optional: true },
 };
-var PULL_TABLES = ['Movimientos', 'Facturas', 'Recurrentes', 'Por cobrar', 'Categorías', 'Ajustes', 'Deudas', 'Presupuesto', 'Listas', 'Reglas', 'Metas', 'Cuentas y bienes', 'Saldos', 'Cuotas'];
+var PULL_TABLES = ['Movimientos', 'Facturas', 'Recurrentes', 'Por cobrar', 'Categorías', 'Ajustes', 'Deudas', 'Presupuesto', 'Listas', 'Reglas', 'Metas', 'Cuentas y bienes', 'Saldos', 'Cuotas', 'Ingresos esperados'];
 var CUOTAS_MESES_ATRAS = 25;
 var CUOTAS_MESES_ADELANTE = 13;
 var REGLAS_HEADERS = ['Contiene', 'Categoría', 'Subcategoría', 'Tipo', 'Activa'];
@@ -497,6 +504,7 @@ function instalar() {
   crearPestana('Metas', TABLES['Metas'].headers);
   crearPestana('Cuentas y bienes', TABLES['Cuentas y bienes'].headers);
   crearPestana('Saldos', TABLES['Saldos'].headers);
+  crearPestana('Ingresos esperados', TABLES['Ingresos esperados'].headers);
   asegurarAjuste('Correos del resumen', Session.getEffectiveUser().getEmail(),
     'Separados por coma. Reciben el cierre preliminar (' + DIAS_ANTES_CIERRE + ' días antes de fin de mes) y el resumen (día 1).');
   ScriptApp.getProjectTriggers().forEach(function (tr) {

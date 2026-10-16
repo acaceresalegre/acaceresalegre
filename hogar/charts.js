@@ -162,7 +162,47 @@
     return { svg: `<svg class="viz" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" role="img" aria-label="Gasto por categoría">${out}</svg>` };
   }
 
-  const api = { niceScale, colPath, barPath, trend, cumulative, categories };
+  // Varias series en líneas mes a mes (admite negativos). Los meses sin datos cortan la línea.
+  function lines({ points, series, width, height = 240, fmtAxis, fmtVal }) {
+    const m = { l: 64, r: 12, t: 12, b: 28 };
+    const pw = Math.max(10, width - m.l - m.r);
+    const ph = height - m.t - m.b;
+    const vals = points.filter((p) => p.hasData).flatMap((p) => series.map((s) => p.values[s.k]));
+    const lo = Math.min(0, ...vals);
+    const hi = Math.max(0, ...vals);
+    const up = niceScale(hi);
+    const down = niceScale(-lo);
+    const step = Math.max(up.step, down.step);
+    const top = Math.ceil(hi / step) * step || step;
+    const bottom = -Math.ceil(-lo / step) * step;
+    const y = (v) => m.t + ph - ((v - bottom) / (top - bottom)) * ph;
+    const band = pw / points.length;
+    const x = (i) => m.l + band * i + band / 2;
+    let out = '';
+    for (let v = bottom; v <= top + step / 2; v += step) {
+      const yy = r1(y(v));
+      out += `<line class="${v === 0 ? 'viz-axis' : 'viz-grid'}" x1="${m.l}" x2="${width - m.r}" y1="${yy}" y2="${yy}"/>` +
+        `<text class="viz-tick" x="${m.l - 8}" y="${yy}" text-anchor="end" dominant-baseline="middle">${esc(fmtAxis(v))}</text>`;
+    }
+    for (const s of series) {
+      let seg = [];
+      const flush = () => { if (seg.length > 1) out += `<polyline class="viz-series ${s.cls}" points="${seg.join(' ')}"/>`; seg = []; };
+      points.forEach((p, i) => {
+        if (!p.hasData) { flush(); return; }
+        seg.push(`${r1(x(i))},${r1(y(p.values[s.k]))}`);
+        out += `<circle class="viz-pt ${s.cls}" cx="${r1(x(i))}" cy="${r1(y(p.values[s.k]))}" r="${s.strong ? 4 : 3}"/>`;
+      });
+      flush();
+    }
+    points.forEach((p, i) => {
+      out += `<text class="viz-tick" x="${r1(x(i))}" y="${height - 8}" text-anchor="middle">${esc(p.label)}</text>`;
+      const rows = p.hasData ? series.map((s) => [s.label, fmtVal(p.values[s.k]), s.tip || '']) : [['Sin saldos cargados', '', '']];
+      out += `<rect class="viz-hit" x="${r1(x(i) - band / 2)}" y="${m.t}" width="${r1(band)}" height="${ph}" tabindex="0" ${tipAttr(p.title, rows)}/>`;
+    });
+    return { svg: `<svg class="viz" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" role="img" aria-label="Evolución del patrimonio">${out}</svg>` };
+  }
+
+  const api = { niceScale, colPath, barPath, trend, cumulative, categories, lines };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.CasaCharts = api;
 })(typeof window !== 'undefined' ? window : globalThis);

@@ -198,7 +198,7 @@ test('sheetToState arma el estado de la app desde la planilla', () => {
   assert.deepEqual(s.recurring.map((r) => [r.id, r.alerts]), [['R1', [7]]]);
   assert.equal(s.receivables[0].collected, false);
   assert.deepEqual(s.loans[0], { id: 'P1', name: 'Préstamo N°1', cur: 'ARS', installment: 172533.76, day: 10,
-    balance: 1821028.66, capital: 2500000, paidCount: 22, totalCount: 42 });
+    balance: 1821028.66, capital: 2500000, paidCount: 22, totalCount: 42, rate: 0 });
   // El estado convertido funciona con las reglas de negocio.
   assert.equal(L.categoryStats(s, '2026-10', TODAY)[0].spent, 187940);
 });
@@ -563,4 +563,90 @@ test('factura de servicios: total a pagar y fecha de «pague hasta»', () => {
 test('fechas fuera de rango o imposibles se ignoran', () => {
   assert.equal(L.parseReceipt('Tienda\nFecha 45/13/2026\nTOTAL 5.000', 'ticket', '2026-10-15').date, null);
   assert.equal(L.parseReceipt('Tienda\n01/01/1999\nTOTAL 5.000', 'ticket', '2026-10-15').date, null);
+});
+
+// ---------- Plan por cobro, patrimonio y deudas ----------
+test('plan por cobro: tramos entre quincenas con facturas, gastos variables y lo que queda libre', () => {
+  const s = emptyState();
+  s.incomePlan = [
+    { id: 'I1', name: 'Sueldo Alan', cat: 'Sueldo Alan', cur: 'COP', amount: 4000000, days: [15, 30] },
+    { id: 'I2', name: 'Sueldo Karo', cat: 'Sueldo Karo', cur: 'COP', amount: 6000000, days: [30] },
+  ];
+  s.bills = [
+    { id: 'b1', name: 'Alquiler', cat: 'Vivienda', amount: 1600000, cur: 'COP', due: '2026-10-16', paid: false },
+    { id: 'b2', name: 'Luz', cat: 'Gastos fijos', amount: 200000, cur: 'COP', due: '2026-10-13', paid: true },
+    { id: 'b3', name: 'Celular', cat: 'Gastos fijos', amount: 32000, cur: 'COP', due: '2026-10-14', paid: false },
+  ];
+  // 900.000 de gasto variable en los últimos 90 días = 10.000 por día.
+  s.movements = [{ id: 'g', date: '2026-10-01', type: 'exp', cat: 'Ocio', sub: '', note: '', amount: 900000, cur: 'COP', method: '' },
+    { id: 'i', date: '2026-09-30', type: 'inc', cat: 'Sueldo Karo', sub: '', note: '', amount: 6000000, cur: 'COP', method: '' }];
+  const p = L.paycheckPlan(s, TODAY);
+  assert.equal(p.inferred, false);
+  assert.deepEqual(p.periods.map((x) => [x.start, x.end, x.income]), [
+    ['2026-09-30', '2026-10-14', 10000000], ['2026-10-15', '2026-10-29', 4000000], ['2026-10-30', '2026-11-14', 10000000],
+    ['2026-11-15', '2026-11-29', 4000000], ['2026-11-30', '2026-11-30', 10000000]]);
+  const cur = p.periods[0];
+  assert.equal(cur.current, true);
+  assert.deepEqual(cur.incomes.map((e) => [e.name, e.received]), [['Sueldo Alan', false], ['Sueldo Karo', true]]);
+  assert.deepEqual(cur.bills.map((b) => [b.name, b.paid]), [['Luz', true], ['Celular', false]]);
+  assert.equal(cur.toPay, 32000, 'solo lo que falta pagar');
+  assert.equal(cur.days, 3, 'del 12 al 14 inclusive');
+  assert.equal(cur.variable, 30000);
+  assert.equal(cur.free, 10000000 - 32000 - 30000);
+  assert.equal(p.periods[1].toPay, 1600000);
+  assert.equal(p.periods[1].cumulative, cur.free + p.periods[1].free);
+});
+
+test('plan por cobro: sin cobros configurados los estima con los últimos 3 meses', () => {
+  const s = emptyState();
+  const inc = (date, cat, amount) => ({ id: date + cat, date, type: 'inc', cat, sub: '', note: '', amount, cur: 'COP', method: '' });
+  s.movements = [
+    inc('2026-07-15', 'Sueldo Alan', 4000000), inc('2026-07-30', 'Sueldo Alan', 4100000),
+    inc('2026-08-14', 'Sueldo Alan', 4000000), inc('2026-08-29', 'Sueldo Alan', 4000000),
+    inc('2026-09-15', 'Sueldo Alan', 4000000), inc('2026-09-30', 'Sueldo Alan', 4000000),
+    inc('2026-08-05', 'Sueldo Karo', 7000000), inc('2026-09-04', 'Sueldo Karo', 7400000),
+    inc('2026-09-20', 'Bono', 900000),
+  ];
+  assert.deepEqual(L.inferIncomePlan(s, TODAY).map((p) => [p.cat, p.days, p.amount]),
+    [['Sueldo Alan', [15], 4000000], ['Sueldo Alan', [30], 4000000], ['Sueldo Karo', [5], 7200000]], 'el bono de un solo mes no cuenta');
+  const p = L.paycheckPlan(s, TODAY);
+  assert.equal(p.inferred, true);
+  assert.equal(p.periods[0].start, '2026-10-05');
+  assert.deepEqual(L.parseDays('15 y 30'), [15, 30]);
+});
+
+test('evolución del patrimonio: un punto por mes, marcando los meses sin saldos', () => {
+  const s = L.sheetToState(conBalance(), null, TODAY);
+  const series = L.netWorthSeries(s, '2026-09', 3, TODAY);
+  assert.deepEqual(series.map((x) => [x.key, x.hasData]), [['2026-07', true], ['2026-08', true], ['2026-09', true]]);
+  assert.equal(series[2].net, L.balanceSheet(s, '2026-09', TODAY).netWorth);
+  assert.equal(L.netWorthSeries(s, '2026-06', 1, TODAY)[0].hasData, false);
+});
+
+test('plan de deudas: el pago extra adelanta el fin y ahorra intereses; avalancha va por la tasa más alta', () => {
+  const s = emptyState();
+  s.loans = [
+    { id: 'A', name: 'Tarjeta', cur: 'COP', installment: 300000, balance: 3000000, rate: 0.30 },
+    { id: 'B', name: 'Auto', cur: 'COP', installment: 500000, balance: 10000000, rate: 0.12 },
+    { id: 'C', name: 'Crédito chico', cur: 'COP', installment: 100000, balance: 800000, rate: 18 },
+  ];
+  const base = L.debtPlan(s, TODAY, { extra: 0 });
+  assert.equal(base.saved, 0);
+  assert.deepEqual(base.endless, []);
+  const av = L.debtPlan(s, TODAY, { extra: 500000, strategy: 'avalanche' });
+  assert.deepEqual(av.order, ['A', 'C', 'B']);
+  assert.equal(av.loans.find((l) => l.id === 'C').rate, 0.18, 'una TNA en porcentaje se pasa a decimal');
+  assert.ok(av.saved > 0);
+  assert.ok(av.planEnd < av.baseEnd);
+  assert.ok(av.monthsSaved > 0);
+  const sb = L.debtPlan(s, TODAY, { extra: 500000, strategy: 'snowball' });
+  assert.deepEqual(sb.order, ['C', 'A', 'B']);
+  assert.ok(sb.loans.find((l) => l.id === 'C').planEnd <= av.loans.find((l) => l.id === 'C').planEnd, 'bola de nieve cierra antes la más chica');
+  assert.ok(av.planInterest <= sb.planInterest + 1, 'avalancha paga menos interés');
+  s.loans.push({ id: 'D', name: 'Capitaliza', cur: 'COP', installment: 0, balance: 1000000, rate: 0.17 });
+  const d = L.debtPlan(s, TODAY, { extra: 0 });
+  assert.equal(d.loans.find((l) => l.id === 'D').baseEnd, null, 'con cuota 0 no se termina nunca');
+  assert.equal(d.baseEnd, null);
+  assert.deepEqual([d.baseInterest, d.saved, d.endless], [null, null, ['Capitaliza']], 'sin fin no hay total de intereses');
+  assert.ok(L.debtPlan(s, TODAY, { extra: 300000 }).loans.find((l) => l.id === 'D').planEnd, 'con extra sí');
 });
