@@ -24,15 +24,17 @@ var TABLES = {
   },
   'Recurrentes': {
     key: ['ID'], dates: [],
-    text: ['ID', 'Nombre', 'Categoría', 'Subcategoría', 'Moneda', 'Avisos (días antes)', 'Activa'],
+    text: ['ID', 'Nombre', 'Categoría', 'Subcategoría', 'Moneda', 'Avisos (días antes)', 'Activa', 'Desde'],
     softDelete: { column: 'Activa', value: 'No' },
+    addable: ['Desde'], // primer mes (AAAA-MM) de una factura mensual nueva
   },
   'Por cobrar': {
     key: ['ID'], dates: ['Fecha de emisión', 'Vence', 'Fecha de cobro'],
     text: ['ID', 'NIT', 'Cliente', 'Moneda', 'Estado', 'Movimiento ID'],
   },
   'Categorías': { key: ['Categoría', 'Subcategoría'], dates: [], text: ['Categoría', 'Subcategoría', 'Tipo'] },
-  'Ajustes': { key: ['Ajuste'], dates: [], text: ['Ajuste', 'Fuente o nota'] },
+  'Ajustes': { key: ['Ajuste'], dates: [], text: ['Ajuste', 'Fuente o nota'],
+    allowedKeys: ['Tasa USD (COP por 1 USD)', 'Tasa ARS (COP por 1 ARS)', 'Umbral de aviso de presupuesto'] },
   'Deudas': { readOnly: true, dates: ['Próximo vencimiento'] },
   'Presupuesto': { readOnly: true, dates: ['Mes'] },
   'Listas': { readOnly: true, dates: [] },
@@ -86,6 +88,9 @@ function doPost(e) {
     var body = JSON.parse((e && e.postData && e.postData.contents) || '{}');
     checkToken(body.token);
     if (body.action === 'ocr') return { ok: true, text: leerImagen(body.image, body.mime) };
+    if (body.action === 'version') return { ok: true, version: getVersion() };
+    if (body.action === 'pull') return pullPayload();
+    if ((body.ops || []).length > 3000) throw new Error('Demasiados cambios juntos');
     var lock = LockService.getScriptLock();
     lock.waitLock(20000);
     try {
@@ -154,6 +159,11 @@ function onEdit() {
   bumpVersion();
 }
 
+// Activador instalable: filas borradas o insertadas a mano también avisan a la app.
+function alCambiar() {
+  bumpVersion();
+}
+
 // ---------- Lectura y escritura de pestañas ----------
 
 function ss() { return SpreadsheetApp.getActiveSpreadsheet(); }
@@ -212,38 +222,55 @@ function applyOps(ops, user) {
     byTable[name].forEach(function (op) { Object.keys(op.row || {}).forEach(function (h) { wanted[h] = true; }); });
     ensureHeaders(name, (cfg.addable || []).filter(function (h) { return wanted[h]; }));
     var t = readTable(name);
+    // Clave → filas (puede haber filas duplicadas a mano con el mismo ID).
     var where = {};
-    t.rows.forEach(function (row, i) { where[keyOf(cfg, row)] = t.rowNumbers[i]; });
-    var deletes = [];
+    var byNumber = {};
+    t.rows.forEach(function (row, i) {
+      var k = keyOf(cfg, row);
+      (where[k] = where[k] || []).push(t.rowNumbers[i]);
+      byNumber[t.rowNumbers[i]] = row;
+    });
+    var deletes = {};
     byTable[name].forEach(function (op) {
       var row = op.row || {};
       var k = keyOf(cfg, row);
       if (!k.replace(/\|/g, '')) return;
-      var rowNumber = where[k];
+      var found = where[k] || [];
       if (op.op === 'delete') {
-        if (!rowNumber) return;
-        if (cfg.softDelete) {
-          writeCells(t, cfg, rowNumber, (function () { var o = {}; o[cfg.softDelete.column] = cfg.softDelete.value; return o; })());
-        } else {
-          deletes.push(rowNumber);
-          if (name === 'Facturas') deleteEventFor(t, rowNumber);
-        }
+        found.forEach(function (n) {
+          if (cfg.softDelete) {
+            writeCells(t, cfg, n, (function () { var o = {}; o[cfg.softDelete.column] = cfg.softDelete.value; return o; })());
+          } else {
+            deletes[n] = true;
+            if (name === 'Facturas') { deleteEventFor(t, n); recordarOmitida(byNumber[n]); }
+          }
+        });
+        // Si en el mismo envío se vuelve a crear esta clave, va a una fila nueva.
+        if (!cfg.softDelete) where[k] = [];
         return;
       }
+      if (cfg.allowedKeys && cfg.allowedKeys.indexOf(String(row[cfg.key[0]])) < 0) return;
+      var rowNumber = found[0];
       var data = {};
       Object.keys(row).forEach(function (h) { data[h] = row[h]; });
       if (t.headers.indexOf('Actualizado') >= 0) data['Actualizado'] = new Date();
       if (!rowNumber) {
         if (t.headers.indexOf('Cargado por') >= 0 && user) data['Cargado por'] = user;
         rowNumber = appendRow(t, cfg);
-        where[k] = rowNumber;
+        where[k] = [rowNumber];
       }
       writeCells(t, cfg, rowNumber, data);
       if (name === 'Facturas') touched.push(String(row.ID));
     });
-    deletes.sort(function (a, b) { return b - a; }).forEach(function (n) { t.sheet.deleteRow(n); });
+    Object.keys(deletes).map(Number).sort(function (a, b) { return b - a; }).forEach(function (n) { t.sheet.deleteRow(n); });
   });
   return touched;
+}
+
+// Una factura mensual borrada desde la app no se vuelve a crear para ese mes.
+function recordarOmitida(row) {
+  if (!row || !row['Recurrente ID'] || !row['Vence']) return;
+  PropertiesService.getScriptProperties().setProperty('omitida|' + row['Recurrente ID'] + '|' + monthKeyOf(row['Vence']), '1');
 }
 
 // Agrega al final de la fila 1 las columnas que falten (por ejemplo «Pagó» en planillas anteriores).
@@ -277,9 +304,16 @@ function appendRow(t, cfg) {
 function writeCells(t, cfg, rowNumber, data) {
   var range = t.sheet.getRange(rowNumber, 1, 1, t.headers.length);
   var row = range.getValues()[0];
+  // Las celdas con fórmula que la app no toca se reescriben como fórmula, no como su valor.
+  var formulas = range.getFormulas()[0];
+  formulas.forEach(function (f, c) { if (f) row[c] = f; });
   Object.keys(data).forEach(function (h) {
     var c = t.headers.indexOf(h);
-    if (c >= 0) row[c] = cellIn(cfg, h, data[h]);
+    if (c < 0) return;
+    var v = cellIn(cfg, h, data[h]);
+    // Un texto que empieza con = o @ quedaría como fórmula: se guarda como texto.
+    if (typeof v === 'string' && /^[=@]/.test(v)) v = "'" + v;
+    row[c] = v;
   });
   range.setValues([row]);
 }
@@ -322,8 +356,11 @@ function generarFacturas() {
   var nuevos = [];
   readTable('Recurrentes').rows.forEach(function (r) {
     if (String(r['Activa'] || 'Sí') === 'No' || !r['ID']) return;
+    var props = PropertiesService.getScriptProperties();
     months.forEach(function (m) {
       if (has['R|' + r['ID'] + '|' + m] || dateInMonth(m, r['Día']) < desde) return;
+      if (r['Desde'] && m < String(r['Desde']).slice(0, 7)) return;
+      if (props.getProperty('omitida|' + r['ID'] + '|' + m)) return;
       nuevos.push({ ID: newId('F'), Nombre: r['Nombre'], 'Categoría': r['Categoría'], 'Subcategoría': r['Subcategoría'] || '',
         Moneda: r['Moneda'] || 'COP', Importe: Number(r['Importe']) || 0, Vence: dateInMonth(m, r['Día']), Pagada: 'No',
         'Recurrente ID': r['ID'], 'Avisos (días antes)': String(r['Avisos (días antes)'] || '3,0') });
@@ -500,6 +537,7 @@ function instalar() {
   });
   corregirTasaArs();
   ensureHeaders('Movimientos', ['Pagó', 'Meta ID']);
+  ensureHeaders('Recurrentes', ['Desde']);
   crearReglas();
   crearPestana('Metas', TABLES['Metas'].headers);
   crearPestana('Cuentas y bienes', TABLES['Cuentas y bienes'].headers);
@@ -509,10 +547,11 @@ function instalar() {
     'Separados por coma. Reciben el cierre preliminar (' + DIAS_ANTES_CIERRE + ' días antes de fin de mes) y el resumen (día 1).');
   ScriptApp.getProjectTriggers().forEach(function (tr) {
     var fn = tr.getHandlerFunction();
-    if (fn === 'tareaPeriodica' || fn === 'tareaDiaria') ScriptApp.deleteTrigger(tr);
+    if (fn === 'tareaPeriodica' || fn === 'tareaDiaria' || fn === 'alCambiar') ScriptApp.deleteTrigger(tr);
   });
   ScriptApp.newTrigger('tareaPeriodica').timeBased().everyHours(1).create();
   ScriptApp.newTrigger('tareaDiaria').timeBased().everyDays(1).atHour(8).create();
+  ScriptApp.newTrigger('alCambiar').forSpreadsheet(ss()).onChange().create();
   tareaPeriodica();
   SpreadsheetApp.getUi().alert('Listo', 'Se crearon las facturas del mes, el calendario «' + calendar().getName() +
     '» y la actualización automática cada hora.\n\nAhora usá «2. Conectar la app».', SpreadsheetApp.getUi().ButtonSet.OK);
@@ -578,12 +617,12 @@ function tareaDiaria() {
   var dia = Number(hoy.slice(8, 10));
   var ultimo = Number(dateInMonth(key, 31).slice(8, 10));
   var props = PropertiesService.getScriptProperties();
-  if (dia === ultimo - DIAS_ANTES_CIERRE && !props.getProperty('mail-pre-' + key)) {
+  if (dia >= ultimo - DIAS_ANTES_CIERRE && !props.getProperty('mail-pre-' + key)) {
     enviarCierrePreliminar(key);
     props.setProperty('mail-pre-' + key, hoy);
   }
   var anterior = addMonthsKey(key, -1);
-  if (dia === 1 && !props.getProperty('mail-res-' + anterior)) {
+  if (dia <= 7 && !props.getProperty('mail-res-' + anterior)) {
     enviarResumenMensual(anterior);
     props.setProperty('mail-res-' + anterior, hoy);
   }

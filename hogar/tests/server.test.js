@@ -10,13 +10,13 @@ function planilla() {
   return {
     'Movimientos': [
       ['ID', 'Fecha', 'Tipo', 'Categoría', 'Subcategoría', 'Moneda', 'Importe', 'Medio de pago', 'Entidad', 'Comentarios', 'Cargado por', 'Actualizado'],
-      ['M0001', D('2026-10-01'), 'Ingreso', 'Ingresos', 'Sueldo Alan', 'COP', 9800000, 'Transferencia', '', '', '', ''],
+      ['M0001', D('2026-10-01'), 'Ingreso', 'Ingresos', 'Sueldo Alan', 'COP', 8000000, 'Transferencia', '', '', '', ''],
       ['M0002', D('2026-10-03'), 'Gasto', 'Alimentación', 'Supermercado', 'COP', 250000, 'Efectivo', 'Davivienda', 'Compra', '', ''],
     ],
     'Facturas': [
       ['ID', 'Nombre', 'Categoría', 'Subcategoría', 'Moneda', 'Importe', 'Vence', 'Pagada', 'Fecha de pago', 'Medio de pago',
         'Recurrente ID', 'Préstamo ID', 'Avisos (días antes)', 'Evento de calendario', 'Actualizado'],
-      ['F0001', 'Hipoteca N°1', 'Obligaciones_financieras', 'Hipoteca N°1', 'COP', 1551581.78, D('2026-10-08'), 'No', '', '', '', 'H1', '3,0', '', ''],
+      ['F0001', 'Hipoteca N°1', 'Obligaciones_financieras', 'Hipoteca N°1', 'COP', 1400000.25, D('2026-10-08'), 'No', '', '', '', 'H1', '3,0', '', ''],
     ],
     'Recurrentes': [
       ['ID', 'Nombre', 'Categoría', 'Subcategoría', 'Moneda', 'Importe', 'Día', 'Avisos (días antes)', 'Activa'],
@@ -29,14 +29,14 @@ function planilla() {
     ],
     'Categorías': [['Categoría', 'Subcategoría', 'Tipo'], ['Alimentación', 'Supermercado', 'Gasto'], ['Ingresos', 'Sueldo Alan', 'Ingreso']],
     'Ajustes': [['Ajuste', 'Valor', 'Fuente o nota'], ['Tasa ARS (COP por 1 ARS)', 2.14, 'XE'], ['Calendario', 'Cuentas Casa', '']],
-    'Deudas': [['ID', 'Préstamo', 'Moneda', 'Capital', 'Próxima cuota'], ['H1', 'Hipoteca N°1', 'COP', 70000000, 1551581.78]],
+    'Deudas': [['ID', 'Préstamo', 'Moneda', 'Capital', 'Próxima cuota'], ['H1', 'Hipoteca N°1', 'COP', 60000000, 1400000.25]],
     'Cuotas': [
       ['ID préstamo', 'Préstamo', 'N° cuota', 'Vencimiento', 'Moneda', 'Amortización', 'Interés', 'Seguro', 'Diferidos', 'Cuota', 'Saldo', 'Pagada'],
-      ['H1', 'Hipoteca N°1', 40, D('2026-10-08'), 'COP', 1, 1, 1, 1, 1551581.78, 1, 'No'],
-      ['H1', 'Hipoteca N°1', 41, D('2026-11-07'), 'COP', 1, 1, 1, 1, 1551581.78, 1, 'No'],
+      ['H1', 'Hipoteca N°1', 40, D('2026-10-08'), 'COP', 1, 1, 1, 1, 1400000.25, 1, 'No'],
+      ['H1', 'Hipoteca N°1', 41, D('2026-11-07'), 'COP', 1, 1, 1, 1, 1400000.25, 1, 'No'],
       ['P4', 'Préstamo N°4', 20, D('2026-11-30'), 'COP', 0, 0, 0, 0, 0, 1, 'No'],
     ],
-    'Presupuesto': [['Mes', 'Categoría', 'Subcategoría', 'Moneda', 'Importe'], [D('2025-10-01'), 'Alimentación', 'Supermercado', 'COP', 758423]],
+    'Presupuesto': [['Mes', 'Categoría', 'Subcategoría', 'Moneda', 'Importe'], [D('2025-10-01'), 'Alimentación', 'Supermercado', 'COP', 700000]],
     'Listas': [['Medio de pago', 'Moneda'], ['Efectivo', 'COP'], ['Transferencia', 'ARS']],
   };
 }
@@ -133,14 +133,14 @@ test('calendario: crea eventos a las 9:00 con avisos y los actualiza al pagar o 
   assert.equal(cal.getName(), 'Cuentas Casa');
   assert.equal(cal.events.length, 4);
   const hip = cal.events.find((e) => e.title.startsWith('Pagar Hipoteca N°1') && e.start.getMonth() === 9);
-  assert.equal(hip.title, 'Pagar Hipoteca N°1 · $ 1.551.582');
+  assert.equal(hip.title, 'Pagar Hipoteca N°1 · $ 1.400.000');
   assert.equal(hip.start.getHours(), 9);
   assert.deepEqual(hip.reminders, [4320, 0]);
   const row = rowsOf(gas, 'Facturas').find((r) => r[0] === 'F0001');
   assert.equal(row[13], hip.id);
 
   gas.post({ token: 'secreto', ops: [{ table: 'Facturas', op: 'upsert', row: { ID: 'F0001', Pagada: 'Sí', 'Fecha de pago': '2026-10-08' } }] });
-  assert.equal(hip.title, '✓ Pagada: Hipoteca N°1 · $ 1.551.582');
+  assert.equal(hip.title, '✓ Pagada: Hipoteca N°1 · $ 1.400.000');
   assert.deepEqual(hip.reminders, []);
 
   gas.post({ token: 'secreto', ops: [{ table: 'Facturas', op: 'delete', row: { ID: 'F0001' } }] });
@@ -195,9 +195,9 @@ test('la pestaña Reglas es opcional e instalar la crea', () => {
   assert.ok(gas.sheets['Movimientos'].data[0].includes('Pagó'));
   const correos = rowsOf(gas, 'Ajustes').find((r) => r[0] === 'Correos del resumen');
   assert.equal(correos[1], 'alan@example.com');
-  assert.deepEqual(gas.triggers.sort(), ['tareaDiaria', 'tareaPeriodica']);
+  assert.deepEqual(gas.triggers.sort(), ['alCambiar', 'tareaDiaria', 'tareaPeriodica']);
   gas.run('instalar');
-  assert.equal(gas.triggers.length, 2, 'reinstalar no duplica los activadores');
+  assert.equal(gas.triggers.length, 3, 'reinstalar no duplica los activadores');
   assert.equal(rowsOf(gas, 'Ajustes').filter((r) => r[0] === 'Correos del resumen').length, 1);
 });
 
@@ -312,4 +312,51 @@ test('ocr: sube la foto a Drive como documento, devuelve el texto y borra el tem
   assert.equal(gas.post({ token: 'otro', action: 'ocr', image: 'x' }).ok, false);
   const fail = createGas(planilla(), { now: NOW, fetch: () => ({ code: 403, body: 'no' }) });
   assert.match(fail.post({ token: 'secreto', action: 'ocr', image: 'eA==' }).error, /lector de Google/);
+});
+
+test('auditoría: borrar y recrear en un envío, IDs duplicados y facturas mensuales', () => {
+  const p = planilla();
+  p['Movimientos'].push(['M0002', D('2026-10-04'), 'Gasto', 'Ocio', '', 'COP', 1, '', '', 'copia a mano', '', '']);
+  const gas = createGas(p, { now: NOW });
+  gas.props.instaladoEl = '2026-10-01';
+  // ID duplicado a mano: borrar lo elimina entero y no toca otras filas.
+  gas.post({ token: 'secreto', ops: [{ table: 'Movimientos', op: 'delete', row: { ID: 'M0002' } }] });
+  assert.deepEqual(rowsOf(gas, 'Movimientos').map((r) => r[0]), ['M0001']);
+  // Borrar y volver a crear la misma clave en un mismo envío deja la fila nueva.
+  gas.post({ token: 'secreto', ops: [
+    { table: 'Saldos', op: 'upsert', row: { 'Cuenta ID': 'B1', Mes: '2026-09-01', Saldo: 1 } }] });
+  gas.post({ token: 'secreto', ops: [
+    { table: 'Saldos', op: 'delete', row: { 'Cuenta ID': 'B1', Mes: '2026-09-01' } },
+    { table: 'Saldos', op: 'upsert', row: { 'Cuenta ID': 'B1', Mes: '2026-09-01', Saldo: 2 } }] });
+  assert.deepEqual(rowsOf(gas, 'Saldos').map((r) => r[4]), [2]);
+  // Factura mensual que arranca el mes que viene: no se crea la de este mes.
+  gas.post({ token: 'secreto', ops: [{ table: 'Recurrentes', op: 'upsert', row: { ID: 'R9', Nombre: 'Gym', 'Categoría': 'Ocio', Moneda: 'COP', Importe: 90000, 'Día': 5, Activa: 'Sí', Desde: '2026-11' } }] });
+  const gym = () => rowsOf(gas, 'Facturas').filter((r) => r[1] === 'Gym').map((r) => r[6].toISOString().slice(0, 7));
+  assert.deepEqual(gym(), ['2026-11']);
+  // Borrar una factura mensual no la vuelve a crear.
+  const celu = rowsOf(gas, 'Facturas').find((r) => r[1] === 'Celular' && r[6].getMonth() === 10);
+  gas.post({ token: 'secreto', ops: [{ table: 'Facturas', op: 'delete', row: { ID: celu[0] } }] });
+  gas.run('tareaPeriodica');
+  assert.equal(rowsOf(gas, 'Facturas').filter((r) => r[1] === 'Celular' && r[6].getMonth() === 10).length, 0);
+  // Ajustes: solo las claves que maneja la app; los textos con = no quedan como fórmula.
+  gas.post({ token: 'secreto', ops: [
+    { table: 'Ajustes', op: 'upsert', row: { Ajuste: 'Correos del resumen', Valor: 'otro@example.com' } },
+    { table: 'Movimientos', op: 'upsert', row: { ID: 'X1', Fecha: '2026-10-10', Tipo: 'Gasto', Comentarios: '=HYPERLINK("x")', Importe: 1 } }] });
+  assert.ok(!rowsOf(gas, 'Ajustes').some((r) => r[0] === 'Correos del resumen'));
+  assert.equal(rowsOf(gas, 'Movimientos').find((r) => r[0] === 'X1')[9], '\'=HYPERLINK("x")');
+  // Lectura por POST, sin el código en la dirección.
+  assert.equal(gas.post({ token: 'secreto', action: 'version' }).ok, true);
+  assert.ok(gas.post({ token: 'secreto', action: 'pull' }).tables['Movimientos']);
+});
+
+test('auditoría: los mails salen aunque el activador se saltee el día', () => {
+  const p = planilla();
+  p['Ajustes'].push(['Correos del resumen', 'alan@example.com', '']);
+  let now = D('2026-10-29');
+  const gas = createGas(p, { now: () => now });
+  gas.run('tareaDiaria');
+  now = D('2026-11-03');
+  gas.run('tareaDiaria');
+  gas.run('tareaDiaria');
+  assert.deepEqual(gas.mails.map((m) => m.subject.split(' · ')[1]), ['Cierre preliminar de octubre 2026', 'Resumen de octubre 2026']);
 });

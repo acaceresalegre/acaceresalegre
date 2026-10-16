@@ -10,7 +10,7 @@ const emptyState = () => {
 };
 
 test('formato de montos en COP, ARS y USD', () => {
-  assert.equal(L.formatMoney(1551582, 'COP'), '$ 1.551.582');
+  assert.equal(L.formatMoney(1400000, 'COP'), '$ 1.400.000');
   assert.equal(L.formatMoney(1234, 'ARS'), 'AR$ 1.234');
   assert.equal(L.formatMoney(-95.5, 'USD'), '−US$ 95,50');
   assert.equal(L.formatShort(113400000, 'COP'), '$ 113,4 M');
@@ -19,14 +19,14 @@ test('formato de montos en COP, ARS y USD', () => {
 
 test('conversión con tasas expresadas en COP', () => {
   const rates = { COP: 1, ARS: 2.13845, USD: 3194.44 };
-  assert.equal(Math.round(L.convert(173089, 'ARS', 'COP', rates)), 370142);
+  assert.equal(Math.round(L.convert(160001, 'ARS', 'COP', rates)), 342154);
   assert.equal(L.convert(3194.44, 'COP', 'USD', rates), 1);
 });
 
 test('campo de monto: solo dígitos, máximo 12, con miles', () => {
   assert.equal(L.cleanDigits('$ 01.234abc'), '1234');
   assert.equal(L.cleanDigits('1234567890123456'), '123456789012');
-  assert.equal(L.groupDigits('1551582'), '1.551.582');
+  assert.equal(L.groupDigits('1400000'), '1.400.000');
 });
 
 test('dueInfo: vencida, hoy, mañana, por vencer y más adelante', () => {
@@ -44,7 +44,7 @@ test('dueInfo: vencida, hoy, mañana, por vencer y más adelante', () => {
 
 test('ensureRecurring crea una instancia por mes y ajusta el día 30/31', () => {
   const s = emptyState();
-  s.recurring.push({ id: 'r1', name: 'Préstamo N°3', cat: 'Obligaciones financieras', amount: 1162496, cur: 'COP', day: 30, alerts: [3, 0] });
+  s.recurring.push({ id: 'r1', name: 'Préstamo N°3', cat: 'Obligaciones financieras', amount: 1050000, cur: 'COP', day: 30, alerts: [3, 0] });
   assert.equal(L.ensureRecurring(s, '2027-02'), 1);
   assert.equal(L.ensureRecurring(s, '2027-02'), 0);
   assert.equal(s.bills[0].due, '2027-02-28');
@@ -102,16 +102,16 @@ test('calendario: octubre 2026 empieza jueves (3 celdas vacías)', () => {
   assert.equal(L.dayDot([{ paid: false, due: '2026-10-20' }], TODAY), 'amber');
 });
 
-test('datos de ejemplo: préstamos de la hoja Deudas y préstamos 1 y 2 vencidos', () => {
+test('datos de ejemplo: préstamos ficticios y uno vencido para mostrar la alerta', () => {
   const s = L.sampleState(TODAY);
-  assert.equal(s.loans.length, 5);
-  const p1 = s.bills.find((b) => b.name === 'Préstamo N°1');
+  assert.equal(s.loans.length, 3);
+  const p1 = s.bills.find((b) => b.name === 'Préstamo de ejemplo');
   assert.equal(p1.due, '2026-10-10');
   assert.equal(p1.paid, false);
-  assert.equal(s.bills.find((b) => b.name === 'Hipoteca N°1').paid, true);
+  assert.equal(s.bills.find((b) => b.name === 'Hipoteca de ejemplo').paid, true);
   L.clearSamples(s);
   assert.equal(s.movements.length, 0);
-  assert.equal(s.bills.length, 5);
+  assert.equal(s.bills.length, 3);
   assert.ok(s.bills.every((b) => !b.paid));
 });
 
@@ -133,7 +133,7 @@ test('importar filas de "Movimientos Reales"', () => {
     ['Movimientos Reales'],
     ['Período', 'Fecha', 'Categoría', 'Descripción', 'Moneda', 'Importe', 'Medio de pago', 'Entidad', 'Comentarios'],
     ['2026-10', '05/10/2026', 'Alimentación', 'Supermercado', 'COP', '450.000', 'Tarjeta Débito', 'Banco', ''],
-    ['2026-10', new Date(2026, 9, 1), 'Sueldo Karo', '', 'COP', 7600000, 'Transferencia', '', 'Octubre'],
+    ['2026-10', new Date(2026, 9, 1), 'Sueldo Karo', '', 'COP', 6000000, 'Transferencia', '', 'Octubre'],
     ['2026-10', '2026-10-03', 'Gastos_Fijos', 'Internet', 'ARS', '-12.500,50', 'Efectivo', '', ''],
     ['2026-10', '2026-10-04', 'Algo raro', '', 'USD', '30', '', '', ''],
     ['', '', '', '', '', '', '', '', ''],
@@ -142,7 +142,7 @@ test('importar filas de "Movimientos Reales"', () => {
   assert.equal(skipped, 1);
   assert.deepEqual(movements.map((m) => [m.date, m.type, m.cat, m.sub, m.cur, m.amount]), [
     ['2026-10-05', 'exp', 'Alimentación', 'Supermercado', 'COP', 450000],
-    ['2026-10-01', 'inc', 'Sueldo Karo', '', 'COP', 7600000],
+    ['2026-10-01', 'inc', 'Sueldo Karo', '', 'COP', 6000000],
     ['2026-10-03', 'exp', 'Gastos fijos', 'Internet', 'ARS', 12500.5],
     ['2026-10-04', 'exp', 'Otros gastos', 'Algo raro', 'USD', 30],
   ]);
@@ -156,11 +156,11 @@ test('lectura de ticket: comercio, total, fecha y categoría sugerida', () => {
 // ---------- Sincronización ----------
 const TABLES = {
   'Movimientos': [
-    { ID: 'M1', Fecha: '2026-10-01', Tipo: 'Ingreso', 'Categoría': 'Ingresos', 'Subcategoría': 'Sueldo Karo', Moneda: 'COP', Importe: 7600000, Entidad: 'Banco' },
+    { ID: 'M1', Fecha: '2026-10-01', Tipo: 'Ingreso', 'Categoría': 'Ingresos', 'Subcategoría': 'Sueldo Karo', Moneda: 'COP', Importe: 6000000, Entidad: 'Banco' },
     { ID: 'M2', Fecha: '2026-10-03', Tipo: 'Gasto', 'Categoría': 'Gastos_Fijos', 'Subcategoría': 'Luz', Moneda: 'COP', Importe: 187940, Comentarios: 'EPM' },
   ],
   'Facturas': [{ ID: 'F1', Nombre: 'Préstamo N°1', 'Categoría': 'Obligaciones_financieras', 'Subcategoría': 'Préstamo N°1', Moneda: 'ARS',
-    Importe: 173088.92, Vence: '2026-10-10', Pagada: 'No', 'Préstamo ID': 'P1', 'Avisos (días antes)': '3,0', 'Evento de calendario': 'ev1' }],
+    Importe: 160000.5, Vence: '2026-10-10', Pagada: 'No', 'Préstamo ID': 'P1', 'Avisos (días antes)': '3,0', 'Evento de calendario': 'ev1' }],
   'Recurrentes': [
     { ID: 'R1', Nombre: 'Celular', 'Categoría': 'Gastos_Fijos', 'Subcategoría': 'Celular', Moneda: 'COP', Importe: 32000, 'Día': 29, 'Avisos (días antes)': 7, Activa: 'Sí' },
     { ID: 'R2', Nombre: 'Alquiler', 'Categoría': 'Gastos_Fijos', Moneda: 'COP', Importe: 1600000, 'Día': 16, Activa: 'No' },
@@ -173,10 +173,10 @@ const TABLES = {
   ],
   'Ajustes': [{ Ajuste: 'Tasa ARS (COP por 1 ARS)', Valor: 2.13845 }, { Ajuste: 'Umbral de aviso de presupuesto', Valor: 0.9 }],
   'Deudas': [{ ID: 'P1', 'Préstamo': 'Préstamo N°1', Moneda: 'ARS', Capital: 2500000, 'Plazo (cuotas)': 42, 'Día de vencimiento': 10,
-    'Próxima cuota': 172533.76, 'Saldo actual': 1821028.66, 'Cuotas vencidas': 22 }],
+    'Próxima cuota': 159500.2, 'Saldo actual': 1700000.6, 'Cuotas vencidas': 22 }],
   'Presupuesto': [
     { Mes: '2025-10-01', 'Categoría': 'Gastos_Fijos', Moneda: 'COP', Importe: 3000000 },
-    { Mes: '2025-10-01', 'Categoría': 'Gastos_Fijos', Moneda: 'COP', Importe: 1075013 },
+    { Mes: '2025-10-01', 'Categoría': 'Gastos_Fijos', Moneda: 'COP', Importe: 1000000 },
     { Mes: '2025-09-01', 'Categoría': 'Gastos_Fijos', Moneda: 'COP', Importe: 1 },
   ],
   'Listas': [{ 'Medio de pago': 'Efectivo' }, { 'Medio de pago': 'Cheques' }],
@@ -189,7 +189,7 @@ test('sheetToState arma el estado de la app desde la planilla', () => {
   assert.equal(s.settings.rates.ARS, 2.13845);
   assert.equal(s.settings.threshold, 90);
   assert.deepEqual(s.categories.map((c) => [c.name, c.limit, c.subs]), [
-    ['Gastos fijos', 4075013, ['Luz', 'Celular']], ['Obligaciones financieras', 0, ['Préstamo N°1']]]);
+    ['Gastos fijos', 4000000, ['Luz', 'Celular']], ['Obligaciones financieras', 0, ['Préstamo N°1']]]);
   assert.deepEqual(s.incomeCats, ['Sueldo Alan', 'Sueldo Karo']);
   assert.deepEqual(s.methods, ['Efectivo', 'Cheques']);
   assert.deepEqual(s.movements.map((m) => [m.type, m.cat, m.sub]), [['inc', 'Sueldo Karo', ''], ['exp', 'Gastos fijos', 'Luz']]);
@@ -197,8 +197,8 @@ test('sheetToState arma el estado de la app desde la planilla', () => {
   assert.equal(s.bills[0].loanId, 'P1');
   assert.deepEqual(s.recurring.map((r) => [r.id, r.alerts]), [['R1', [7]]]);
   assert.equal(s.receivables[0].collected, false);
-  assert.deepEqual(s.loans[0], { id: 'P1', name: 'Préstamo N°1', cur: 'ARS', installment: 172533.76, day: 10,
-    balance: 1821028.66, capital: 2500000, paidCount: 22, totalCount: 42, rate: 0 });
+  assert.deepEqual(s.loans[0], { id: 'P1', name: 'Préstamo N°1', cur: 'ARS', installment: 159500.2, day: 10,
+    balance: 1700000.6, capital: 2500000, paidCount: 22, totalCount: 42, rate: 0 });
   // El estado convertido funciona con las reglas de negocio.
   assert.equal(L.categoryStats(s, '2026-10', TODAY)[0].spent, 187940);
 });
@@ -225,8 +225,7 @@ test('stateToRows vuelve a los nombres de la planilla y diffRows detecta solo ca
   ]);
   const bill = ops.find((o) => o.table === 'Facturas').row;
   assert.equal(bill['Pagada'], 'Sí');
-  assert.equal(bill['Avisos (días antes)'], '3,0');
-  assert.equal(bill['Evento de calendario'], undefined, 'la app no pisa columnas que no maneja');
+  assert.deepEqual(Object.keys(bill).sort(), ['Fecha de pago', 'ID', 'Pagada'], 'en filas existentes solo viaja lo que cambió');
   assert.equal(ops.find((o) => o.row.ID === 'n1').row['Categoría'], 'Gastos_Fijos');
 });
 
@@ -310,7 +309,7 @@ test('quién cargó y quién pagó cada movimiento', () => {
   assert.equal(L.personOf(s.movements.find((m) => m.id === 'M4')), 'Alan');
   assert.deepEqual(L.peopleOf(s), ['Alan', 'Karo']);
   assert.deepEqual(L.spendByPerson(s, '2026-10').map((r) => [r.name, r.income, r.expense]), [
-    ['Karo', 0, 50000], ['Alan', 0, 32000], ['Sin asignar', 7600000, 187940 + 32000]]);
+    ['Karo', 0, 50000], ['Alan', 0, 32000], ['Sin asignar', 6000000, 187940 + 32000]]);
   const f = (person) => L.filterMovements(s, { period: 'month', month: '2026-10', person }, TODAY).list.map((m) => m.id).sort();
   assert.deepEqual(f('Karo'), ['M3']);
   assert.deepEqual(f('-'), ['M1', 'M2', 'M5']);
@@ -420,7 +419,7 @@ const conBalance = () => ({
     { ID: 'A1', Fecha: '2026-09-21', Tipo: 'Ahorro', 'Categoría': 'Ahorro', 'Subcategoría': 'Viaje', 'Meta ID': 'G1', Moneda: 'COP', Importe: 500000 },
   ],
   'Facturas': [
-    { ID: 'F1', Nombre: 'Préstamo N°1', 'Categoría': 'Obligaciones_financieras', Moneda: 'ARS', Importe: 173736, Vence: '2026-09-10', Pagada: 'Sí', 'Fecha de pago': '2026-09-10', 'Préstamo ID': 'P1' },
+    { ID: 'F1', Nombre: 'Préstamo N°1', 'Categoría': 'Obligaciones_financieras', Moneda: 'ARS', Importe: 161000, Vence: '2026-09-10', Pagada: 'Sí', 'Fecha de pago': '2026-09-10', 'Préstamo ID': 'P1' },
     { ID: 'F2', Nombre: 'Celular', 'Categoría': 'Gastos_Fijos', 'Subcategoría': 'Celular', Moneda: 'COP', Importe: 32000, Vence: '2026-09-29', Pagada: 'No' },
     { ID: 'F3', Nombre: 'Internet', 'Categoría': 'Gastos_Fijos', Moneda: 'COP', Importe: 100000, Vence: '2026-09-15', Pagada: 'Sí', 'Fecha de pago': '2026-09-14' },
   ],
@@ -429,8 +428,8 @@ const conBalance = () => ({
     { ID: 'C2', 'Fecha de emisión': '2026-09-10', Cliente: 'Estudio', Moneda: 'COP', Valor: 2000000, Vence: '2026-10-10', Estado: 'Pendiente' },
   ],
   'Cuotas': [
-    { 'ID préstamo': 'P1', 'Préstamo': 'Préstamo N°1', 'N° cuota': 21, Vencimiento: '2026-09-10', Moneda: 'ARS', 'Amortización': 47914, 'Interés': 102369, Seguro: 23454, Diferidos: 0, Cuota: 173736, Saldo: 1871498 },
-    { 'ID préstamo': 'P1', 'Préstamo': 'Préstamo N°1', 'N° cuota': 22, Vencimiento: '2026-10-10', Moneda: 'ARS', 'Amortización': 50469, 'Interés': 99813, Seguro: 22807, Diferidos: 0, Cuota: 173089, Saldo: 1821029 },
+    { 'ID préstamo': 'P1', 'Préstamo': 'Préstamo N°1', 'N° cuota': 21, Vencimiento: '2026-09-10', Moneda: 'ARS', 'Amortización': 45000, 'Interés': 95000, Seguro: 21000, Diferidos: 0, Cuota: 161000, Saldo: 1745000 },
+    { 'ID préstamo': 'P1', 'Préstamo': 'Préstamo N°1', 'N° cuota': 22, Vencimiento: '2026-10-10', Moneda: 'ARS', 'Amortización': 47000, 'Interés': 93000, Seguro: 20500, Diferidos: 0, Cuota: 160001, Saldo: 1700001 },
   ],
   'Cuentas y bienes': [
     { ID: 'B1', Nombre: 'Banco', Tipo: 'Cuenta bancaria', Moneda: 'COP', Activa: 'Sí' },
@@ -455,10 +454,10 @@ test('estado de resultados devengado: facturas del mes, por cobrar al emitir y s
   assert.deepEqual(r.expense.map((x) => [x.name, x.amount]), [['Gastos fijos', 200000 + 32000 + 100000]], 'la cuota del préstamo no es gasto operativo');
   assert.equal(r.unpaid, 32000);
   assert.equal(r.financial.length, 1);
-  assert.ok(Math.abs(r.financial[0].interest - 102369 * ARS) < 1e-6);
-  assert.ok(Math.abs(r.financial[0].other - 23454 * ARS) < 1e-6);
-  assert.ok(Math.abs(r.principal - 47914 * ARS) < 1e-6, 'la amortización se informa aparte');
-  assert.ok(Math.abs(r.result - (11000000 - 332000 - (102369 + 23454) * ARS)) < 1e-6);
+  assert.ok(Math.abs(r.financial[0].interest - 95000 * ARS) < 1e-6);
+  assert.ok(Math.abs(r.financial[0].other - 21000 * ARS) < 1e-6);
+  assert.ok(Math.abs(r.principal - 45000 * ARS) < 1e-6, 'la amortización se informa aparte');
+  assert.ok(Math.abs(r.result - (11000000 - 332000 - (95000 + 21000) * ARS)) < 1e-6);
   assert.equal(L.incomeStatement(s, '2026-08').income[0].name, 'Facturas emitidas');
 });
 
@@ -470,12 +469,12 @@ test('situación patrimonial al cierre: cuentas, por cobrar, préstamos y factur
   assert.deepEqual(b.groups.invest.map((x) => [x.name, x.amount, x.stale]), [['CDT', 5000000, true]], 'usa el último saldo cargado');
   assert.equal(b.assets.asset, 40000000);
   assert.equal(b.assets.receivables, 2000000, 'C1 ya se cobró el 20/9; C2 sigue pendiente');
-  assert.ok(Math.abs(b.totalLoans - 1871498 * ARS) < 1e-6, 'saldo después de la cuota de septiembre');
+  assert.ok(Math.abs(b.totalLoans - 1745000 * ARS) < 1e-6, 'saldo después de la cuota de septiembre');
   assert.deepEqual(b.payables.map((x) => x.name), ['Celular']);
-  assert.ok(Math.abs(b.netWorth - (11100000 + 5000000 + 2000000 + 40000000 - 1871498 * ARS - 32000)) < 1e-6);
+  assert.ok(Math.abs(b.netWorth - (11100000 + 5000000 + 2000000 + 40000000 - 1745000 * ARS - 32000)) < 1e-6);
   const ago = L.balanceSheet(s, '2026-08', TODAY);
   assert.equal(ago.assets.receivables, 1000000);
-  assert.ok(Math.abs(ago.totalLoans - (1871498 + 47914) * ARS) < 1e-6, 'antes de la primera cuota de la ventana');
+  assert.ok(Math.abs(ago.totalLoans - (1745000 + 45000) * ARS) < 1e-6, 'antes de la primera cuota de la ventana');
   assert.deepEqual(ago.missing.map((a) => a.id), ['B4']);
 });
 
@@ -487,8 +486,8 @@ test('flujo de efectivo: variación de las cuentas contra lo registrado', () => 
   assert.equal(f.closing, 11100000);
   assert.equal(f.receipts, 10000000, 'cobros en caja, incluido el de la factura emitida');
   assert.equal(f.spending, 300000, 'gastos más facturas pagadas en el mes (no la impaga)');
-  assert.ok(Math.abs(f.loanPayments - 173736 * ARS) < 1e-6);
-  assert.ok(Math.abs(f.unexplained - (7900000 - (10000000 - 300000 - 173736 * ARS))) < 1e-6);
+  assert.ok(Math.abs(f.loanPayments - 161000 * ARS) < 1e-6);
+  assert.ok(Math.abs(f.unexplained - (7900000 - (10000000 - 300000 - 161000 * ARS))) < 1e-6);
   assert.equal(L.cashFlow(s, '2026-10').complete, false);
 });
 
@@ -590,9 +589,10 @@ test('plan por cobro: tramos entre quincenas con facturas, gastos variables y lo
   assert.deepEqual(cur.incomes.map((e) => [e.name, e.received]), [['Sueldo Alan', false], ['Sueldo Karo', true]]);
   assert.deepEqual(cur.bills.map((b) => [b.name, b.paid]), [['Luz', true], ['Celular', false]]);
   assert.equal(cur.toPay, 32000, 'solo lo que falta pagar');
-  assert.equal(cur.days, 3, 'del 12 al 14 inclusive');
-  assert.equal(cur.variable, 30000);
-  assert.equal(cur.free, 10000000 - 32000 - 30000);
+  assert.equal(cur.days, 2, 'del 13 al 14: lo de hoy ya está en lo gastado');
+  assert.equal(cur.variable, 20000);
+  assert.equal(cur.spent, 900000, 'lo gastado desde el cobro');
+  assert.equal(cur.free, 10000000 - 900000 - 32000 - 20000);
   assert.equal(p.periods[1].toPay, 1600000);
   assert.equal(p.periods[1].cumulative, cur.free + p.periods[1].free);
 });
@@ -649,4 +649,51 @@ test('plan de deudas: el pago extra adelanta el fin y ahorra intereses; avalanch
   assert.equal(d.baseEnd, null);
   assert.deepEqual([d.baseInterest, d.saved, d.endless], [null, null, ['Capitaliza']], 'sin fin no hay total de intereses');
   assert.ok(L.debtPlan(s, TODAY, { extra: 300000 }).loans.find((l) => l.id === 'D').planEnd, 'con extra sí');
+});
+
+// ---------- Auditoría ----------
+test('auditoría: plan por cobro descuenta lo ya gastado e incluye facturas vencidas', () => {
+  const s = emptyState();
+  s.incomePlan = [{ id: 'I', name: 'Sueldo', cat: 'Sueldo Alan', cur: 'COP', amount: 10000000, days: [1] }];
+  s.movements = [{ id: 'g', date: '2026-10-05', type: 'exp', cat: 'Ocio', sub: '', note: '', amount: 9000000, cur: 'COP', method: '' }];
+  s.bills = [{ id: 'r', name: 'Arriendo', cat: 'Vivienda', amount: 2800000, cur: 'COP', due: '2026-09-28', paid: false }];
+  const cur = L.paycheckPlan(s, '2026-10-20').periods[0];
+  assert.equal(cur.spent, 9000000);
+  assert.equal(cur.toPay, 2800000);
+  assert.ok(cur.bills[0].overdue);
+  assert.ok(cur.free < 0);
+});
+
+test('auditoría: presupuesto de cada mes, préstamos sin tabla y antes de existir', () => {
+  const t = { ...TABLES, 'Presupuesto': [
+    { Mes: '2026-10-01', 'Categoría': 'Gastos_Fijos', Moneda: 'COP', Importe: 1000000 },
+    { Mes: '2026-11-01', 'Categoría': 'Gastos_Fijos', Moneda: 'COP', Importe: 3000000 }] };
+  const s = L.sheetToState(t, null, '2026-11-01');
+  assert.equal(L.categoryStats(s, '2026-10', '2026-11-01')[0].limit, 1000000);
+  assert.equal(L.categoryStats(s, '2026-11', '2026-11-01')[0].limit, 3000000);
+  // Cuota de préstamo sin tabla: interés estimado con la tasa y el saldo.
+  const r = L.incomeStatement(s, '2026-10');
+  assert.equal(r.financial.length, 1);
+  assert.ok(r.financial[0].estimated && r.financial[0].interest > 0 && r.financial[0].interest < L.toCOP(s.bills[0], s.settings.rates) + 1);
+  // Préstamo cuya primera cuota es más adelante: antes no hay deuda.
+  s.schedule = [{ loanId: 'P1', n: 1, due: '2027-01-10', cur: 'COP', principal: 100, interest: 10, insurance: 0, deferred: 0, balance: 900 }];
+  assert.equal(L.loanBalanceAt(s, s.loans[0], '2026-12', '2026-11-01'), 0);
+});
+
+test('auditoría: CSV sin fórmulas y alerta de cobro sin fecha', () => {
+  const s = emptyState();
+  s.movements = [{ id: 'a', date: '2026-10-01', type: 'exp', cat: 'Ocio', sub: '', note: '=1+1', amount: 5, cur: 'COP', method: '' }];
+  assert.match(L.toCSV(s), /"'=1\+1"/);
+  s.receivables = [{ id: 'c', client: 'X', due: '', amount: 1, cur: 'COP', collected: false }];
+  assert.ok(!L.buildAlerts(s, TODAY).some((a) => /NaN/.test(a.sub)));
+});
+
+test('auditoría: plan de deudas sin extra no reparte sobrantes y lee TNA mayores a 100 %', () => {
+  const s = emptyState();
+  s.loans = [{ id: 'A', name: 'A', cur: 'COP', installment: 1000000, balance: 1500000, rate: 0 },
+    { id: 'B', name: 'B', cur: 'COP', installment: 100000, balance: 5000000, rate: 0.12 }];
+  const solo = { ...s, loans: [s.loans[1]] };
+  assert.equal(L.debtPlan(s, TODAY).loans[1].baseEnd, L.debtPlan(solo, TODAY).loans[0].baseEnd);
+  s.loans = [{ id: 'C', name: 'C', cur: 'COP', installment: 100000, balance: 1000000, rate: 1.2 }];
+  assert.equal(L.debtPlan(s, TODAY).loans[0].rate, 1.2);
 });

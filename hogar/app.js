@@ -76,6 +76,7 @@
 
   function queueChanges() {
     if (!isSynced()) return;
+    localEdits++;
     const rows = L.stateToRows(state);
     const ops = L.diffRows(sync.snapshot, rows);
     sync.snapshot = rows;
@@ -85,9 +86,10 @@
     push();
   }
 
+  // Todo viaja por POST con el código en el cuerpo (no en la dirección, que queda en registros e historial).
+  // text/plain evita la consulta previa de CORS que Apps Script no responde.
   async function call(method, params, body) {
-    const url = sync.url + (method === 'GET' ? '?' + new URLSearchParams({ ...params, token: sync.token }) : '');
-    const res = await fetch(url, method === 'GET' ? {} : { method: 'POST', body: JSON.stringify({ ...body, token: sync.token }) });
+    const res = await fetch(sync.url, { method: 'POST', body: JSON.stringify({ ...params, ...body, token: sync.token }) });
     const data = await res.json();
     if (!data.ok) throw new Error(data.error || 'Error de la planilla');
     return data;
@@ -123,8 +125,14 @@
     return pushing;
   }
 
+  // Una lectura que tardó no pisa cambios hechos mientras tanto ni una versión más nueva ya recibida.
+  let localEdits = 0;
   async function pull() {
-    applyPull(await call('GET', { action: 'pull' }));
+    const before = localEdits;
+    const data = await call('GET', { action: 'pull' });
+    if (sync.pending.length || pushing || localEdits !== before) return;
+    if (sync.version && Number(data.version) < Number(sync.version)) return;
+    applyPull(data);
   }
 
   async function poll() {
@@ -144,7 +152,8 @@
     Object.assign(sync, { url, token, user, pending: [], snapshot: null, version: null });
     try {
       const data = await call('GET', { action: 'pull' });
-      if (!confirm(`Conectado a la planilla. Los datos de este dispositivo se reemplazan por los de la planilla (${data.tables['Movimientos'].length} movimientos). ¿Continuar?`)) {
+      const dep = (url.match(/\/s\/([^/]+)\//) || [])[1] || '';
+      if (!confirm(`Conectado a la planilla (implementación …${dep.slice(-6)}). Los datos de este dispositivo se reemplazan por los de la planilla (${data.tables['Movimientos'].length} movimientos). ¿Continuar?`)) {
         Object.assign(sync, prev);
         return;
       }
@@ -221,8 +230,8 @@
     const info = L.dueInfo(b, today);
     const tone = info.state === 'paid' ? 'green' : info.tone;
     return `<div class="bill ${b.paid ? 'paid' : ''}">
-      <button class="check ${b.paid ? 'on' : info.state === 'overdue' ? 'over' : ''}" data-act="toggle-bill" data-id="${b.id}" aria-label="${b.paid ? 'Desmarcar pago' : 'Marcar como pagada'}"><i>${b.paid ? '✓' : ''}</i></button>
-      <button class="body" data-act="bill" data-id="${b.id}">
+      <button class="check ${b.paid ? 'on' : info.state === 'overdue' ? 'over' : ''}" data-act="toggle-bill" data-id="${esc(b.id)}" aria-label="${b.paid ? 'Desmarcar pago' : 'Marcar como pagada'}"><i>${b.paid ? '✓' : ''}</i></button>
+      <button class="body" data-act="bill" data-id="${esc(b.id)}">
         <span class="grow"><div class="name">${esc(b.name)}</div><div class="due ${tone ? 'tone-' + tone : ''}">${esc(info.label)}</div></span>
         <span class="right"><b class="amt">${esc(shown(b))}</b><small>${esc(b.cat)}</small></span>
       </button>
@@ -236,7 +245,7 @@
   function movRow(m) {
     const when = L.monthKey(m.date) === curMonth ? `día ${L.dayOf(m.date)}` : dateTxt(m.date);
     const sub = [m.type === 'save' ? 'Ahorro' : '', m.cat, m.sub, when, L.personOf(m)].filter(Boolean).join(' · ');
-    return `<button class="mov" data-act="mov" data-id="${m.id}">
+    return `<button class="mov" data-act="mov" data-id="${esc(m.id)}">
       <span class="grow"><b>${esc(movTitle(m))}</b><small>${esc(sub)}</small></span>
       <span class="amt ${amtCls(m)}">${amtSign(m)}${esc(shown(m))}</span>
     </button>`;
@@ -389,7 +398,8 @@
       return `<section class="card r20 stmt pay-period ${x.current ? 'current' : ''}">
         <div class="sec-head"><h2>${x.current ? 'Ahora · ' : ''}${esc(range)}</h2>${x.free < 0 ? '<span class="chip red">No alcanza</span>' : x.free < x.income * 0.1 ? '<span class="chip amber">Justo</span>' : '<span class="chip green">Alcanza</span>'}</div>
         ${x.incomes.map((e) => line(`${esc(e.name)}${e.received ? ' <small>cobrado</small>' : ''}`, e.amount, 'ind')).join('') || '<div class="st-row ind muted"><span>Sin cobros en este tramo</span><b>—</b></div>'}
-        ${x.bills.map((b) => line(`<button class="link" data-act="bill" data-id="${esc(b.id)}">${esc(b.name)}</button> <small>${esc(dm(b.due))}${b.paid ? ' · pagada' : ''}</small>`, b.paid ? null : -b.amount, 'ind' + (b.paid ? ' muted' : ''))).join('')}
+        ${x.spent ? line('Ya gastado desde el cobro', -x.spent, 'ind') : ''}
+        ${x.bills.map((b) => line(`<button class="link" data-act="bill" data-id="${esc(b.id)}">${esc(b.name)}</button> <small>${esc(dm(b.due))}${b.paid ? ' · pagada' : b.overdue ? ' · vencida' : ''}</small>`, b.paid ? null : -b.amount, 'ind' + (b.paid ? ' muted' : b.overdue ? ' tone-red' : ''))).join('')}
         ${line(`Gastos del día a día <small>${x.days} día${x.days === 1 ? '' : 's'}${x.current ? ' que quedan' : ''}</small>`, -x.variable, 'ind')}
         ${line(x.current ? 'Libre en lo que queda del tramo' : 'Libre en el tramo', x.free, 'total ' + (x.free < 0 ? 'tone-red' : ''))}
         <div class="st-note">Acumulado desde hoy: <b class="${x.cumulative < 0 ? 'tone-red' : ''}">${esc(money(x.cumulative))}</b></div>
@@ -433,7 +443,7 @@
 
   function saveIncomePlan() {
     const next = incForm.filter((f) => Number(f.digits) && L.parseDays(f.days).length)
-      .map((f) => ({ id: f.id || L.uid(), name: f.cat, cat: f.cat, cur: f.cur || 'COP', amount: Number(f.digits), days: L.parseDays(f.days) }));
+      .map((f) => ({ id: f.id || L.uid(), name: f.name || f.cat, cat: f.cat, cur: f.cur || 'COP', amount: Number(f.digits), days: L.parseDays(f.days) }));
     if (incForm.some((f) => Number(f.digits) && !L.parseDays(f.days).length)) return toast('Falta el día de cobro en algún ingreso', 'red');
     state.incomePlan = next;
     incForm = null;
@@ -454,7 +464,7 @@
         <div class="body"><span class="grow"><div class="name">${esc(r.client)}</div>
           <div class="due ${!r.collected && d < 0 ? 'tone-red' : ''}">Vence el ${esc(L.shortDate(r.due))} · ${when}</div></span>
           <span class="right"><b class="amt">${esc(shown(r))}</b></span></div>
-        <button class="pill ${r.collected ? '' : 'on'}" style="margin-left:10px" data-act="recv-toggle" data-id="${r.id}">${r.collected ? 'Deshacer' : 'Cobrada'}</button>
+        <button class="pill ${r.collected ? '' : 'on'}" style="margin-left:10px" data-act="recv-toggle" data-id="${esc(r.id)}">${r.collected ? 'Deshacer' : 'Cobrada'}</button>
       </div>`;
     };
     return `<section class="dark">
@@ -604,7 +614,7 @@
       }
       const hasCount = l.paidCount != null && l.totalCount;
       const line = [hasCount ? `Cuota ${l.paidCount} de ${l.totalCount}` : 'Cuota mensual', l.capital ? `capital ${orig({ amount: l.capital, cur: l.cur })}` : ''].filter(Boolean).join(' · ');
-      return `<button class="card cat-card tap" data-act="loan" data-id="${l.id}">
+      return `<button class="card cat-card tap" data-act="loan" data-id="${esc(l.id)}">
         <div class="top"><span class="name">${esc(l.name)}</span>${chip}</div>
         <div class="meta" style="margin:-4px 0 10px">${esc(line)}</div>
         ${hasCount ? bar((l.paidCount / l.totalCount) * 100, 'green', { size: 'h7' }) : ''}
@@ -816,7 +826,7 @@
       ${r.expense.map((x) => line(esc(x.name), neg(x.amount), 'ind')).join('') || '<div class="st-row ind"><span>Sin gastos</span><b>—</b></div>'}
       ${line('Total gastos', neg(r.totalExpense), 'sub')}
       ${r.financial.length ? `<div class="st-head">Gastos financieros</div>
-        ${r.financial.map((x) => line(`${esc(x.name)} <small>interés${x.other ? ' + seguros' : ''}</small>`, neg(x.interest + x.other), 'ind')).join('')}
+        ${r.financial.map((x) => line(`${esc(x.name)} <small>${x.estimated ? (x.interest ? 'interés estimado (sin tabla de cuotas)' : '') : `interés${x.other ? ' + seguros' : ''}`}</small>`, neg(x.interest + x.other), 'ind')).join('')}
         ${line('Total financieros', neg(r.totalFinancial), 'sub')}` : ''}
       ${line(`Resultado del mes${r.margin != null ? ` <small>${pctTxt(r.margin)} de los ingresos</small>` : ''}`, r.result, 'total ' + (r.result < 0 ? 'tone-red' : ''))}
       <div class="st-note">Mes anterior: ${esc(money(prev.result))}.
@@ -1263,13 +1273,13 @@
           ${b.templateId ? '<div class="kv"><span>Repetición</span><b>Todos los meses</b></div>' : ''}
         </div>
         <span class="field-label">Recordarme</span>
-        <div class="pills">${pills(ALERT_OPTS, (v) => (b.alerts || []).includes(Number(v)), 'bill-alert', `data-id="${b.id}"`)}</div>
+        <div class="pills">${pills(ALERT_OPTS, (v) => (b.alerts || []).includes(Number(v)), 'bill-alert', `data-id="${esc(b.id)}"`)}</div>
         <span class="field-label">Medio de pago</span>
-        <div class="pills">${pills(state.methods.map((m) => [m, m]), (v) => v === b.method, 'bill-method', `data-id="${b.id}"`)}</div>
-        <button class="primary" data-act="toggle-bill" data-id="${b.id}">${b.paid ? 'Desmarcar pago' : 'Marcar como pagada'}</button>
-        <button class="secondary" data-act="ics-bill" data-id="${b.id}">Agregar al calendario</button>
-        ${b.templateId ? `<button class="danger-link" data-act="bill-stop" data-id="${b.id}">Dejar de repetir</button>` : ''}
-        <button class="danger-link" data-act="bill-del" data-id="${b.id}">Eliminar factura</button>`;
+        <div class="pills">${pills(state.methods.map((m) => [m, m]), (v) => v === b.method, 'bill-method', `data-id="${esc(b.id)}"`)}</div>
+        <button class="primary" data-act="toggle-bill" data-id="${esc(b.id)}">${b.paid ? 'Desmarcar pago' : 'Marcar como pagada'}</button>
+        <button class="secondary" data-act="ics-bill" data-id="${esc(b.id)}">Agregar al calendario</button>
+        ${b.templateId ? `<button class="danger-link" data-act="bill-stop" data-id="${esc(b.id)}">Dejar de repetir</button>` : ''}
+        <button class="danger-link" data-act="bill-del" data-id="${esc(b.id)}">Eliminar factura</button>`;
     });
   }
 
@@ -1317,7 +1327,7 @@
         <button class="primary" data-act="limit-save" data-id="${esc(name)}">Guardar límite</button>`}
         <span class="field-label">Movimientos y facturas del mes</span>
         <div class="list-card">${items.length ? items.map((it) => (it.kind === 'mov' ? movRow(it) : `
-          <button class="mov" data-act="bill" data-id="${it.id}"><span class="grow"><b>${esc(it.name)}</b><small>Factura · ${esc(L.dueInfo(it, today).label)}</small></span><span class="amt">${esc(shown(it))}</span></button>`)).join('') : '<div class="empty">Sin movimientos este mes</div>'}</div>`;
+          <button class="mov" data-act="bill" data-id="${esc(it.id)}"><span class="grow"><b>${esc(it.name)}</b><small>Factura · ${esc(L.dueInfo(it, today).label)}</small></span><span class="amt">${esc(shown(it))}</span></button>`)).join('') : '<div class="empty">Sin movimientos este mes</div>'}</div>`;
     }, (sheet) => {
       const input = sheet.querySelector('#limit');
       if (!input) return;
@@ -1353,8 +1363,8 @@
           ${m.paidBy ? `<div class="kv"><span>${m.type === 'inc' ? 'Lo recibió' : m.type === 'save' ? 'Aportó' : 'Pagó'}</span><b>${esc(m.paidBy)}</b></div>` : ''}
           ${m.by ? `<div class="kv"><span>Cargado por</span><b>${esc(m.by)}</b></div>` : ''}
         </div>
-        <button class="primary" data-act="mov-edit" data-id="${m.id}">Editar</button>
-        <button class="danger-link" data-act="mov-del" data-id="${m.id}">Eliminar movimiento</button>`;
+        <button class="primary" data-act="mov-edit" data-id="${esc(m.id)}">Editar</button>
+        <button class="danger-link" data-act="mov-del" data-id="${esc(m.id)}">Eliminar movimiento</button>`;
     });
   }
 
@@ -1458,13 +1468,13 @@
       <input class="input" id="f-note" maxlength="60" value="${esc(f.note)}" placeholder="${f.mode === 'bill' ? 'Ej: Internet hogar' : 'Opcional'}">
       ${f.mode === 'bill' ? `
         <span class="field-label">Vencimiento</span>
-        <input class="input" id="f-due" type="date" value="${f.due}">
+        <input class="input" id="f-due" type="date" value="${esc(f.due)}">
         <div class="card setting-row" style="margin-top:12px"><span><b>Se repite cada mes</b><small>Se crea la factura de cada mes</small></span>
           <button class="switch ${f.recurring ? 'on' : ''}" data-act="form-rec" aria-label="Se repite cada mes" aria-pressed="${f.recurring}"></button></div>
         <span class="field-label">Recordarme</span>
         <div class="pills">${pills(ALERT_OPTS, (v) => f.alerts.includes(Number(v)), 'form-alert')}</div>` : `
         <span class="field-label">Fecha</span>
-        <input class="input" id="f-date" type="date" value="${f.date}">`}
+        <input class="input" id="f-date" type="date" value="${esc(f.date)}">`}
       ${f.mode === 'exp' ? `<span class="field-label">Medio de pago</span>
         <div class="pills">${pills(state.methods.map((m) => [m, m]), (v) => v === f.method, 'form-method')}</div>` : ''}
       ${f.mode !== 'bill' ? `<span class="field-label">${f.mode === 'inc' ? '¿Quién lo recibió?' : f.mode === 'save' ? '¿Quién aportó?' : '¿Quién pagó?'} <small class="hint">· opcional</small></span>
@@ -1567,6 +1577,7 @@
         if (state.categories.some((c) => c.name.toLowerCase() === n.toLowerCase())) return toast('Esa categoría ya existe', 'red');
         state.categories.push({ name: n, group: n, limit: Number(nc.digits) || 0, subs: nc.subs.split(',').map((s) => s.trim()).filter(Boolean) });
         persist();
+        queueChanges();
         toast(`Categoría creada: ${n}`, 'green');
         if (returnToAdd && saved) {
           form = { ...saved, cat: n, sub: '' };
@@ -1648,7 +1659,7 @@
           <div class="kv"><span>Cuotas vencidas</span><b>${loan.paidCount ?? '—'} de ${loan.totalCount ?? '—'}</b></div>
         </div>
         <div class="notice">Para cambiar estos datos, editá las pestañas Deudas y Cuotas de la planilla.</div>
-        ${b ? `<button class="secondary" data-act="bill" data-id="${b.id}">Ver cuota de ${esc(L.monthName(curMonth))}</button>` : ''}`;
+        ${b ? `<button class="secondary" data-act="bill" data-id="${esc(b.id)}">Ver cuota de ${esc(L.monthName(curMonth))}</button>` : ''}`;
     });
   }
 
@@ -1675,8 +1686,8 @@
         <div class="two">${field('balance', 'Saldo actual', true)}${field('capital', 'Capital original', true)}</div>
         <div class="two">${field('paidCount', 'Cuotas pagadas')}${field('totalCount', 'Total de cuotas')}</div>
         <button class="primary" id="loan-save">Guardar</button>
-        ${b ? `<button class="secondary" data-act="bill" data-id="${b.id}">Ver cuota de ${esc(L.monthName(curMonth))}</button>` : ''}
-        ${isNew ? '' : `<button class="danger-link" data-act="loan-del" data-id="${loan.id}">Eliminar préstamo</button>`}`;
+        ${b ? `<button class="secondary" data-act="bill" data-id="${esc(b.id)}">Ver cuota de ${esc(L.monthName(curMonth))}</button>` : ''}
+        ${isNew ? '' : `<button class="danger-link" data-act="loan-del" data-id="${esc(loan.id)}">Eliminar préstamo</button>`}`;
     }, (sheet) => {
       sheet.querySelectorAll('[data-k]').forEach((inp) => {
         inp.oninput = () => {
