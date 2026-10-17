@@ -453,25 +453,33 @@
   }
 
   function renderPorCobrar() {
-    const pend = state.receivables.filter((r) => !r.collected).sort((a, b) => a.due.localeCompare(b.due));
-    const done = state.receivables.filter((r) => r.collected).sort((a, b) => b.due.localeCompare(a.due));
-    const total = pend.reduce((s, r) => s + cop(r), 0);
-    const overdue = pend.filter((r) => r.due < today).length;
-    const row = (r) => {
+    const withInfo = state.receivables.map((r) => ({ r, info: L.receivableInfo(state, r) }));
+    const pend = withInfo.filter((x) => x.info.status !== 'done').sort((a, b) => a.r.due.localeCompare(b.r.due));
+    const done = withInfo.filter((x) => x.info.status === 'done').sort((a, b) => b.r.due.localeCompare(a.r.due));
+    const total = pend.reduce((s, x) => s + cop({ amount: x.info.pending, cur: x.r.cur }), 0);
+    const overdue = pend.filter((x) => x.r.due < today).length;
+    const partial = pend.filter((x) => x.info.status === 'partial').length;
+    const row = ({ r, info }) => {
       const d = L.daysBetween(today, r.due);
       const when = d < 0 ? `hace ${-d} días` : d === 0 ? 'hoy' : `en ${d} días`;
-      return `<div class="bill ${r.collected ? 'paid' : ''}" style="padding-left:14px">
-        <div class="body"><span class="grow"><div class="name">${esc(r.client)}</div>
-          <div class="due ${!r.collected && d < 0 ? 'tone-red' : ''}">Vence el ${esc(L.shortDate(r.due))} · ${when}</div></span>
-          <span class="right"><b class="amt">${esc(shown(r))}</b></span></div>
-        <button class="pill ${r.collected ? '' : 'on'}" style="margin-left:10px" data-act="recv-toggle" data-id="${esc(r.id)}">${r.collected ? 'Deshacer' : 'Cobrada'}</button>
-      </div>`;
+      const isDone = info.status === 'done';
+      const sub = info.status === 'partial'
+        ? `Cobrado ${esc(L.formatMoney(info.collected, r.cur))} · falta ${esc(L.formatMoney(info.pending, r.cur))}`
+        : isDone ? (info.writtenOff > 0.5 ? `Cobrado ${esc(L.formatMoney(info.collected, r.cur))} · sin cobrar ${esc(L.formatMoney(info.writtenOff, r.cur))}` : 'Cobrada')
+          : `Vence el ${esc(L.shortDate(r.due))} · ${when}`;
+      return `<button class="bill recv ${isDone ? 'paid' : ''}" data-act="recv" data-id="${esc(r.id)}">
+        <span class="body"><span class="grow"><span class="name">${esc(r.client)}</span>
+          <span class="due ${!isDone && d < 0 ? 'tone-red' : ''}">${info.status === 'partial' ? '<span class="chip amber">Parcial</span> ' : ''}${sub}</span>
+          ${info.status === 'partial' ? bar((info.collected / r.amount) * 100, 'green') : ''}</span>
+          <span class="right"><b class="amt">${esc(shown(r))}</b></span></span>
+        <span class="pill ${isDone ? '' : 'on'}">${isDone ? 'Ver' : 'Cobrar'}</span>
+      </button>`;
     };
     return `<section class="dark">
         <div class="lbl">Pendiente de cobro</div>
         <div class="big num">${esc(money(total))}</div>
         <hr>
-        <div class="line"><span>Facturas pendientes</span><b>${pend.length}</b></div>
+        <div class="line"><span>Facturas pendientes</span><b>${pend.length}${partial ? ` · ${partial} con cobro parcial` : ''}</b></div>
         <div class="line"><span>Vencidas</span><b class="${overdue ? 'neg' : ''}">${overdue}</b></div>
       </section>
       ${pend.length ? `<div class="group-title">Pendientes</div><div class="stack">${pend.map(row).join('')}</div>` : '<div class="card empty" style="margin-top:18px">Todo cobrado</div>'}
@@ -1625,23 +1633,103 @@
     });
   }
 
-  function toggleReceivable(id) {
+  // --- Cobros de una factura emitida (totales o parciales) ---
+  let collectForm = null;
+  function openCollect(id) {
     const r = state.receivables.find((x) => x.id === id);
     if (!r) return;
-    if (!r.collected) {
-      const mov = { id: L.uid(), date: today, type: 'inc', cat: 'Sueldo Karo', sub: '', note: `Cobro ${r.client}`, amount: r.amount, cur: r.cur, method: 'Transferencia' };
-      state.movements.push(mov);
-      r.collected = true;
-      r.collectedAt = today;
-      r.incomeId = mov.id;
-      toast(`Cobrada: ${r.client} · ${shown(r)}`, 'green');
-    } else {
-      state.movements = state.movements.filter((m) => m.id !== r.incomeId);
+    const info = L.receivableInfo(state, r);
+    const lastCat = info.payments.length ? info.payments[info.payments.length - 1].cat : null;
+    collectForm = { id, digits: String(Math.round(info.pending)), date: today, rest: 'open',
+      cat: lastCat || (state.incomeCats.includes('Sueldo Karo') ? 'Sueldo Karo' : state.incomeCats[0]) };
+    openSheet(() => {
+      const rr = state.receivables.find((x) => x.id === collectForm.id);
+      if (!rr) return '<div class="empty">La factura ya no existe.</div>';
+      const inf = L.receivableInfo(state, rr);
+      const f = collectForm;
+      const amt = Number(f.digits) || 0;
+      const short = inf.status !== 'done' && amt > 0 && amt < inf.pending - 0.5;
+      const fm = (v) => esc(L.formatMoney(v, rr.cur));
+      return `<h3>${esc(rr.client)}</h3>
+        <p class="lead">Factura emitida${rr.issued ? ` el ${esc(L.shortDate(rr.issued))}` : ''} · vence el ${esc(L.shortDate(rr.due))}</p>
+        <div class="card">
+          <div class="kv"><span>Valor</span><b class="num">${fm(rr.amount)}</b></div>
+          <div class="kv"><span>Cobrado</span><b class="num tone-green">${fm(inf.collected)}</b></div>
+          ${inf.writtenOff > 0.5 ? `<div class="kv"><span>No se cobra <small>retención o descuento</small></span><b class="num">${fm(inf.writtenOff)}</b></div>`
+            : `<div class="kv"><span>Falta cobrar</span><b class="num ${inf.pending ? 'tone-red' : ''}">${fm(inf.pending)}</b></div>`}
+        </div>
+        ${inf.payments.length ? `<span class="field-label">Cobros</span>
+          <div class="card">${inf.payments.map((m) => `<div class="kv"><span>${esc(L.shortDate(m.date))} <small>${esc(m.cat)}</small></span>
+            <b class="num">${esc(L.formatMoney(m.amount, m.cur))} <button class="link" data-act="recv-undo" data-id="${esc(m.id)}">Quitar</button></b></div>`).join('')}</div>` : ''}
+        ${inf.status === 'done' ? `<button class="pill" style="margin-top:14px" data-act="recv-reopen" data-id="${esc(rr.id)}">Reabrir (falta cobrar)</button>` : `
+          <span class="field-label">Monto cobrado</span>
+          <div class="amount-row"><span class="cur">${rr.cur === 'COP' ? '$' : rr.cur === 'ARS' ? 'AR$' : 'US$'}</span>
+            <input id="c-amount" inputmode="numeric" autocomplete="off" value="${L.groupDigits(f.digits)}" aria-label="Monto cobrado"></div>
+          <div id="c-rest">${restBlock(short, inf.pending - amt, rr.cur)}</div>
+          <span class="field-label">Fecha del cobro</span>
+          <input class="input" id="c-date" type="date" value="${esc(f.date)}">
+          <span class="field-label">Se registra como ingreso en</span>
+          <div class="pills scroll">${pills(state.incomeCats.map((c) => [c, c]), (v) => v === f.cat, 'recv-cat')}</div>
+          <button class="primary" id="c-save" data-act="recv-save" ${amt > 0 ? '' : 'disabled'}>Registrar cobro</button>`}`;
+    }, (sheet) => {
+      const amount = sheet.querySelector('#c-amount');
+      if (!amount) return;
+      amount.oninput = () => {
+        collectForm.digits = L.cleanDigits(amount.value);
+        amount.value = L.groupDigits(collectForm.digits);
+        const rr = state.receivables.find((x) => x.id === collectForm.id);
+        const inf = L.receivableInfo(state, rr);
+        const amt = Number(collectForm.digits) || 0;
+        sheet.querySelector('#c-rest').innerHTML = restBlock(amt > 0 && amt < inf.pending - 0.5, inf.pending - amt, rr.cur);
+        sheet.querySelector('#c-save').disabled = !amt;
+      };
+      const date = sheet.querySelector('#c-date');
+      date.oninput = () => { collectForm.date = date.value; };
+    });
+  }
+
+  // Si se cobra menos de lo que falta: queda pendiente o se da por cobrada (retención en la fuente, descuento).
+  function restBlock(short, rest, cur) {
+    if (!short) return '';
+    return `<span class="field-label">Faltan ${esc(L.formatMoney(rest, cur))}. ¿Qué pasa con eso?</span>
+      <div class="seg wide">${[['open', 'Queda pendiente'], ['close', 'No se cobra']].map(([v, l]) =>
+        `<button class="${collectForm.rest === v ? 'on' : ''}" data-act="recv-rest" data-v="${v}">${l}</button>`).join('')}</div>
+      ${collectForm.rest === 'close' ? '<p class="hint" style="margin-top:6px">Por ejemplo, la retención en la fuente o un descuento. La factura queda cobrada.</p>' : ''}`;
+  }
+
+  function saveCollect() {
+    const f = collectForm;
+    const r = state.receivables.find((x) => x.id === f.id);
+    const amount = Number(f.digits) || 0;
+    if (!r || !amount) return;
+    if (!f.date) return toast('Elegí la fecha del cobro', 'red');
+    const before = L.receivableInfo(state, r);
+    const mov = { id: L.uid(), date: f.date, type: 'inc', cat: f.cat, sub: '', note: `Cobro ${r.client}`, amount, cur: r.cur,
+      method: 'Transferencia', receivableId: r.id, by: sync.user || '' };
+    state.movements.push(mov);
+    if (!r.incomeId) r.incomeId = mov.id;
+    const left = before.pending - amount;
+    if (left < 0.5 || f.rest === 'close') { r.collected = true; r.collectedAt = f.date; }
+    collectForm = null;
+    closeSheet();
+    toast(r.collected ? `Cobrada: ${r.client}${left > 0.5 ? ` · sin cobrar ${L.formatMoney(left, r.cur)}` : ''}`
+      : `Cobro parcial: falta ${L.formatMoney(left, r.cur)}`, 'green');
+    save();
+  }
+
+  // Quitar un cobro: la factura vuelve a quedar con saldo pendiente.
+  function undoCollect(movId) {
+    const m = state.movements.find((x) => x.id === movId);
+    if (!m || !confirm('¿Quitar este cobro? Se borra también el ingreso.')) return;
+    state.movements = state.movements.filter((x) => x.id !== movId);
+    for (const r of state.receivables) {
+      if (r.id !== m.receivableId && r.incomeId !== movId) continue;
       r.collected = false;
-      r.incomeId = null;
-      toast('Cobro deshecho');
+      r.collectedAt = null;
+      if (r.incomeId === movId) r.incomeId = null;
     }
     save();
+    renderSheet();
   }
 
   // --- Préstamo ---
@@ -2098,7 +2186,27 @@
     'year-month': (d) => { ui.yearSel = d.v && d.v !== ui.yearSel ? d.v : null; renderScreen(); },
     threshold: (d) => { state.settings.threshold = Number(d.v); save(); },
     'new-cat': (d) => openNewCategory(d.v === 'add'),
-    'recv-toggle': (d) => toggleReceivable(d.id),
+    recv: (d) => openCollect(d.id),
+    'recv-toggle': (d) => openCollect(d.id),
+    'recv-save': () => saveCollect(),
+    'recv-undo': (d) => undoCollect(d.id),
+    'recv-reopen': (d) => {
+      const r = state.receivables.find((x) => x.id === d.id);
+      if (!r) return;
+      r.collected = false;
+      r.collectedAt = null;
+      save();
+      renderSheet();
+    },
+    'recv-rest': (d) => {
+      collectForm.rest = d.v;
+      const el = document.querySelector('#c-rest');
+      const r = state.receivables.find((x) => x.id === collectForm.id);
+      const inf = L.receivableInfo(state, r);
+      const amt = Number(collectForm.digits) || 0;
+      if (el) el.innerHTML = restBlock(amt > 0 && amt < inf.pending - 0.5, inf.pending - amt, r.cur);
+    },
+    'recv-cat': (d) => { collectForm.cat = d.v; renderSheet(); },
     'recv-add': () => openNewReceivable(),
     ics: () => { download('cuentas-casa-vencimientos.ics', L.toICS(state, today), 'text/calendar'); toast('Archivo de calendario descargado'); },
     'ics-bill': (d) => {
@@ -2130,8 +2238,15 @@
     },
     'mov-del': (d) => {
       if (!confirm('¿Eliminar este movimiento?')) return;
+      const gone = state.movements.find((m) => m.id === d.id);
       state.movements = state.movements.filter((m) => m.id !== d.id);
-      state.receivables.forEach((r) => { if (r.incomeId === d.id) { r.collected = false; r.incomeId = null; } });
+      // Si era el cobro de una factura emitida, la factura vuelve a quedar con saldo pendiente.
+      state.receivables.forEach((r) => {
+        if (!gone || (gone.receivableId !== r.id && r.incomeId !== gone.id)) return;
+        if (r.incomeId === gone.id) r.incomeId = null;
+        r.collected = false;
+        r.collectedAt = null;
+      });
       closeSheet();
       save();
     },

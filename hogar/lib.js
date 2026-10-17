@@ -377,18 +377,36 @@
     return today && key === monthKey(today) && loan.balance != null ? loan.balance : null;
   }
 
+  // ---------- Facturas emitidas (por cobrar) ----------
+  // Cada cobro, total o parcial, es un ingreso vinculado a la factura (Movimientos → «Por cobrar ID»).
+  // Cobros anteriores a esta versión quedaron enlazados con «Movimiento ID» de la factura.
+  const isPaymentOf = (m, r) => m.type === 'inc' && (m.receivableId === r.id || (r.incomeId && m.id === r.incomeId));
+  function receivableInfo(state, r, until) {
+    const rates = state.settings.rates;
+    const payments = state.movements.filter((m) => isPaymentOf(m, r) && (!until || m.date <= until))
+      .sort((a, b) => a.date.localeCompare(b.date));
+    let collected = payments.reduce((s, m) => s + convert(m.amount, m.cur, r.cur, rates), 0);
+    // Marcada «Cobrada» sin ningún cobro vinculado (cargada así en la planilla): se cobró completa.
+    if (r.collected && !until && !payments.length) collected = r.amount;
+    const pending = Math.max(0, r.amount - collected);
+    // Cerrada con menos de lo facturado: retención en la fuente, descuento o lo que no se va a cobrar.
+    const closed = Boolean(r.collected);
+    const status = closed || pending < 0.5 ? 'done' : collected > 0 ? 'partial' : 'pending';
+    return { payments, collected, pending: closed ? 0 : pending, status, writtenOff: closed ? pending : 0,
+      lastDate: payments.length ? payments[payments.length - 1].date : null };
+  }
+
   // Estado de resultados del mes, por lo devengado: ingresos y gastos del mes aunque no se hayan cobrado o pagado.
   // De los préstamos solo es gasto el interés, el seguro y los diferidos; la amortización baja la deuda.
   function incomeStatement(state, key) {
     const rates = state.settings.rates;
     const inMonth = (iso) => Boolean(iso) && monthKey(iso) === key;
-    const collected = new Set(state.receivables.filter((r) => r.incomeId).map((r) => r.incomeId));
     const income = new Map();
     const add = (map, k, v) => map.set(k, (map.get(k) || 0) + v);
     for (const m of state.movements) {
       if (m.type !== 'inc' || !inMonth(m.date)) continue;
-      // El cobro de una factura emitida ya se contó cuando se emitió.
-      if (collected.has(m.id) && state.receivables.some((r) => r.incomeId === m.id && r.issued)) continue;
+      // El cobro (total o parcial) de una factura emitida ya se contó cuando se emitió.
+      if (state.receivables.some((r) => r.issued && isPaymentOf(m, r))) continue;
       add(income, m.cat, toCOP(m, rates));
     }
     for (const r of state.receivables) if (r.issued && inMonth(r.issued)) add(income, 'Facturas emitidas', toCOP(r, rates));
@@ -443,9 +461,13 @@
       if (!b) { missing.push(a); continue; }
       groups[kindClass(a.kind)].push({ id: a.id, name: a.name, amount: convert(b.amount, a.cur, 'COP', rates), month: b.month, stale: b.month !== key });
     }
-    const collectedOn = (r) => r.collectedAt || (state.movements.find((m) => m.id === r.incomeId) || {}).date || '9999-12-31';
-    const receivables = state.receivables.filter((r) => (r.issued || r.due) <= end && !(r.collected && collectedOn(r) <= end))
-      .map((r) => ({ name: r.client, amount: toCOP(r, rates) }));
+    // Lo que faltaba cobrar al cierre: valor menos los cobros hasta esa fecha (nada, si ya se cerró).
+    const receivables = state.receivables.filter((r) => (r.issued || r.due) <= end).map((r) => {
+      const info = receivableInfo(state, r, end);
+      const closedOn = r.collectedAt || receivableInfo(state, r).lastDate || '9999-12-31';
+      const left = r.collected && closedOn <= end ? 0 : Math.max(0, r.amount - info.collected);
+      return { name: r.client, amount: convert(left, r.cur, 'COP', rates) };
+    }).filter((x) => x.amount > 0.5);
     const loans = [];
     const noData = [];
     for (const l of state.loans) {
@@ -679,8 +701,12 @@
       .forEach((s) => out.push({ kind: 'cat', id: s.name, tone: 'amber', title: `${s.name} al ${Math.round(s.pct)}%`, sub: `Quedan ${money(s.limit - s.spent)}` }));
     stats.filter((s) => s.status === 'proj')
       .forEach((s) => out.push({ kind: 'cat', id: s.name, tone: 'amber', title: `${s.name} podría excederse`, sub: `Proyección ${Math.round(s.projPct)}% al cierre del mes` }));
-    state.receivables.filter((r) => !r.collected && r.due && r.due < today)
-      .forEach((r) => out.push({ kind: 'recv', id: r.id, tone: 'neutral', title: `Por cobrar: ${r.client}`, sub: `Venció hace ${daysBetween(r.due, today)} días · ${money(toCOP(r, rates))}` }));
+    state.receivables.filter((r) => !r.collected && r.due && r.due < today).forEach((r) => {
+      const info = receivableInfo(state, r);
+      if (info.status === 'done') return;
+      out.push({ kind: 'recv', id: r.id, tone: 'neutral', title: `Por cobrar: ${r.client}`,
+        sub: `Venció hace ${daysBetween(r.due, today)} días · ${info.status === 'partial' ? 'falta ' : ''}${money(convert(info.pending, r.cur, 'COP', rates))}` });
+    });
     return out;
   }
 
@@ -1156,6 +1182,7 @@
         cat: inc ? str(r['Subcategoría']) : label(r['Categoría']), sub: inc ? '' : str(r['Subcategoría']),
         note: str(r['Comentarios']), amount: num(r['Importe']), cur: str(r['Moneda']) || 'COP', method: str(r['Medio de pago']),
         by: str(r['Cargado por']), paidBy: str(r['Pagó']),
+        ...(str(r['Por cobrar ID']) ? { receivableId: str(r['Por cobrar ID']) } : {}),
       };
     });
     s.rules = t('Reglas').filter((r) => str(r['Contiene']) && str(r['Activa']) !== 'No').map((r) => {
@@ -1208,6 +1235,7 @@
           'Pagó': m.paidBy || '',
         };
         if (m.type === 'save') row['Meta ID'] = m.goalId || '';
+        if (m.receivableId) row['Por cobrar ID'] = m.receivableId;
         return row;
       }),
       'Ingresos esperados': (s.incomePlan || []).map((p) => ({
@@ -1237,11 +1265,14 @@
         'Importe': r.amount, 'Día': r.day, 'Avisos (días antes)': alerts(r.alerts), 'Activa': 'Sí',
         ...(r.startMonth ? { 'Desde': r.startMonth } : {}),
       })),
-      'Por cobrar': s.receivables.map((r) => ({
-        'ID': r.id, 'Fecha de emisión': r.issued || '', 'Cliente': r.client, 'Moneda': r.cur, 'Valor': r.amount, 'Vence': r.due,
-        'Estado': r.collected ? 'Cobrada' : 'Pendiente', 'Fecha de cobro': r.collected ? (r.collectedAt || '') : '',
-        'Movimiento ID': r.incomeId || '',
-      })),
+      'Por cobrar': s.receivables.map((r) => {
+        const st = receivableInfo(s, r).status;
+        return {
+          'ID': r.id, 'Fecha de emisión': r.issued || '', 'Cliente': r.client, 'Moneda': r.cur, 'Valor': r.amount, 'Vence': r.due,
+          'Estado': st === 'done' ? 'Cobrada' : st === 'partial' ? 'Parcial' : 'Pendiente', 'Fecha de cobro': r.collected ? (r.collectedAt || '') : '',
+          'Movimiento ID': r.incomeId || '',
+        };
+      }),
       'Categorías': [
         ...s.categories.flatMap((c) => (c.subs.length ? c.subs : ['']).map((sub) => ({
           'Categoría': c.group || code(c.name), 'Subcategoría': sub, 'Tipo': 'Gasto' }))),
@@ -1305,7 +1336,7 @@
     elapsedDays, categoryStats, monthSummary, buildAlerts, monthSeries, dailySpend, filterMovements,
     peopleOf, personOf, suggestCategory, spendByPerson, goalProgress,
     ACCOUNT_KINDS, kindClass, accountBalance, loanBalanceAt, incomeStatement, balanceSheet, cashFlow,
-    parseDays, inferIncomePlan, paycheckPlan, netWorthSeries, debtPlan,
+    parseDays, inferIncomePlan, paycheckPlan, netWorthSeries, debtPlan, receivableInfo,
     toICS, toCSV, parseMovementRows, parseNumber, cellToISO, parseReceipt,
     baseState, sampleState, normalizeState, clearSamples,
   };

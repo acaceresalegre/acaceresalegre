@@ -507,3 +507,10 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 14px; }
 .debt-row .grow { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 .debt-row .grow small, .debt-row .when small { color: var(--ink-2); font-size: 11.5px; font-weight: 500; }
 .debt-row .when { display: flex; flex-direction: column; align-items: flex-end; min-width: 74px; white-space: nowrap; }
+
+/* Facturas emitidas: fila completa tocable, nombres largos recortados */
+.bill.recv { width: 100%; padding-left: 14px; font: inherit; color: inherit; border: 0; cursor: pointer; gap: 10px; }
+.bill.recv .name, .bill.recv .due { display: block; }
+.bill.recv .due .chip { margin-right: 4px; vertical-align: 1px; }
+.bill.recv .bar { margin-top: 6px; }
+.bill.recv > .pill { flex-shrink: 0; }

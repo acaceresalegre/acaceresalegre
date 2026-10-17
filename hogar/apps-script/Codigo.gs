@@ -14,8 +14,8 @@ var EVENT_HOUR = 9;
 var TABLES = {
   'Movimientos': {
     key: ['ID'], dates: ['Fecha'],
-    text: ['ID', 'Tipo', 'Categoría', 'Subcategoría', 'Moneda', 'Medio de pago', 'Entidad', 'Comentarios', 'Cargado por', 'Pagó', 'Meta ID'],
-    addable: ['Pagó', 'Meta ID'], // columnas nuevas que se agregan solas si la planilla todavía no las tiene
+    text: ['ID', 'Tipo', 'Categoría', 'Subcategoría', 'Moneda', 'Medio de pago', 'Entidad', 'Comentarios', 'Cargado por', 'Pagó', 'Meta ID', 'Por cobrar ID'],
+    addable: ['Pagó', 'Meta ID', 'Por cobrar ID'], // columnas nuevas que se agregan solas si la planilla todavía no las tiene
   },
   'Facturas': {
     key: ['ID'], dates: ['Vence', 'Fecha de pago'],
@@ -536,7 +536,7 @@ function instalar() {
     });
   });
   corregirTasaArs();
-  ensureHeaders('Movimientos', ['Pagó', 'Meta ID']);
+  ensureHeaders('Movimientos', ['Pagó', 'Meta ID', 'Por cobrar ID']);
   ensureHeaders('Recurrentes', ['Desde']);
   crearReglas();
   crearPestana('Metas', TABLES['Metas'].headers);

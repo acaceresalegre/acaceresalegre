@@ -697,3 +697,39 @@ test('auditoría: plan de deudas sin extra no reparte sobrantes y lee TNA mayore
   s.loans = [{ id: 'C', name: 'C', cur: 'COP', installment: 100000, balance: 1000000, rate: 1.2 }];
   assert.equal(L.debtPlan(s, TODAY).loans[0].rate, 1.2);
 });
+
+// ---------- Cobros parciales ----------
+test('facturas emitidas: cobros parciales, retención y estado en la planilla', () => {
+  const s = L.sheetToState({ ...TABLES,
+    'Por cobrar': [{ ID: 'C1', 'Fecha de emisión': '2026-09-01', Cliente: 'Clínica', Moneda: 'COP', Valor: 1000000, Vence: '2026-10-01', Estado: 'Pendiente' }],
+    'Movimientos': [...TABLES['Movimientos'],
+      { ID: 'P1', Fecha: '2026-09-20', Tipo: 'Ingreso', 'Categoría': 'Ingresos', 'Subcategoría': 'Sueldo Karo', Moneda: 'COP', Importe: 400000, 'Por cobrar ID': 'C1' }],
+  }, null, TODAY);
+  const r = s.receivables[0];
+  let info = L.receivableInfo(s, r);
+  assert.deepEqual([info.status, info.collected, info.pending], ['partial', 400000, 600000]);
+  assert.equal(L.stateToRows(s)['Por cobrar'][0]['Estado'], 'Parcial');
+  assert.equal(L.stateToRows(s)['Movimientos'].find((m) => m.ID === 'P1')['Por cobrar ID'], 'C1');
+  // Balance: al cierre de septiembre falta cobrar 600.000; en agosto la factura no existía.
+  assert.equal(L.balanceSheet(s, '2026-09', TODAY).assets.receivables, 600000);
+  // El cobro parcial no se suma otra vez como ingreso (ya contó al emitirse).
+  assert.deepEqual(L.incomeStatement(s, '2026-09').income.map((x) => x.name), ['Facturas emitidas']);
+  assert.match(L.buildAlerts(s, TODAY).find((a) => a.kind === 'recv').sub, /falta \$ 600\.000/);
+  // Segundo cobro neto de retención: se cierra como cobrada aunque falten 110.000.
+  s.movements.push({ id: 'P2', date: '2026-10-05', type: 'inc', cat: 'Sueldo Karo', sub: '', note: '', amount: 490000, cur: 'COP', method: '', receivableId: 'C1' });
+  r.collected = true; r.collectedAt = '2026-10-05';
+  info = L.receivableInfo(s, r);
+  assert.deepEqual([info.status, info.collected, info.pending, info.writtenOff], ['done', 890000, 0, 110000]);
+  assert.equal(L.stateToRows(s)['Por cobrar'][0]['Estado'], 'Cobrada');
+  assert.equal(L.balanceSheet(s, '2026-10', TODAY).assets.receivables, 0);
+  assert.equal(L.balanceSheet(s, '2026-09', TODAY).assets.receivables, 600000, 'el pasado no cambia');
+  assert.ok(!L.buildAlerts(s, TODAY).some((a) => a.kind === 'recv'));
+  // Un cobro de antes de esta versión (Movimiento ID) también cuenta.
+  const old = { id: 'C2', client: 'X', issued: '2026-09-01', due: '2026-09-30', amount: 100, cur: 'COP', collected: true, incomeId: 'M1' };
+  assert.equal(L.receivableInfo(s, old).payments[0].id, 'M1');
+  // Marcada «Cobrada» en la planilla sin cobros vinculados: cobrada completa, no «sin cobrar».
+  const legacy = { id: 'C3', client: 'Y', issued: '2026-08-01', due: '2026-08-30', amount: 500, cur: 'COP', collected: true, collectedAt: '2026-09-10', incomeId: null };
+  assert.deepEqual([L.receivableInfo(s, legacy).collected, L.receivableInfo(s, legacy).writtenOff], [500, 0]);
+  s.receivables.push(legacy);
+  assert.equal(L.balanceSheet(s, '2026-08', TODAY).receivables.find((x) => x.name === 'Y').amount, 500, 'antes de cobrarla seguía pendiente');
+});
