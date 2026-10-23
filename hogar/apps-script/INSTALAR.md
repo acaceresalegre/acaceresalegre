@@ -60,6 +60,13 @@ Listo: lo que carga uno aparece en el otro en unos 20 segundos, y en la planilla
 
 Los enlaces incluyen el código de acceso: no los compartas con nadie más.
 
+### En iPhone
+
+Safari y la app agregada a la pantalla de inicio guardan los datos por separado. Si el enlace se abre en Safari,
+la app avisa y ofrece **Copiar enlace**. Después se abre la app desde el ícono y en **⋯ → Pegar el enlace de
+conexión** queda conectada. Desde una app ya conectada, **⋯ → Planilla → Copiar enlace para conectar otro
+dispositivo** sirve para pasar la conexión a otro teléfono.
+
 ## 5. Compartir con Karo
 
 - **Planilla**: botón **Compartir** → mail de Karo → Editor.

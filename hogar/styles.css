@@ -514,3 +514,5 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 14px; }
 .bill.recv .due .chip { margin-right: 4px; vertical-align: 1px; }
 .bill.recv .bar { margin-top: 6px; }
 .bill.recv > .pill { flex-shrink: 0; }
+.steps { margin: 0 0 4px; padding: 14px 16px 14px 36px; font-size: 15px; line-height: 1.5; }
+.steps li { padding: 4px 0; }

@@ -733,3 +733,17 @@ test('facturas emitidas: cobros parciales, retención y estado en la planilla', 
   s.receivables.push(legacy);
   assert.equal(L.balanceSheet(s, '2026-08', TODAY).receivables.find((x) => x.name === 'Y').amount, 500, 'antes de cobrarla seguía pendiente');
 });
+
+test('enlace de conexión: completo, con %23, con espacios o con la primera letra en mayúscula', () => {
+  const url = 'https://script.google.com/macros/s/AKfyc123/exec';
+  const full = `https://acaceresalegre.github.io/acaceresalegre/#conectar=${encodeURIComponent(url)}&token=abc-123&quien=Karo`;
+  const ok = { url, token: 'abc-123', user: 'Karo' };
+  assert.deepEqual(L.parseConnectLink(full), ok);
+  assert.deepEqual(L.parseConnectLink(full.replace('#', '%23')), ok, 'el # convertido en %23 al copiar');
+  assert.deepEqual(L.parseConnectLink(encodeURIComponent(full)), ok, 'todo el enlace codificado');
+  assert.deepEqual(L.parseConnectLink('  ' + full.slice(0, 60) + '\n' + full.slice(60) + ' '), ok, 'cortado en dos líneas');
+  assert.deepEqual(L.parseConnectLink('#' + full.split('#')[1]), ok);
+  assert.equal(L.parseConnectLink(full.replace('&token=abc-123', '')), null, 'sin código no sirve');
+  assert.equal(L.parseConnectLink('hola'), null);
+  assert.equal(L.parseConnectHash(`conectar=${encodeURIComponent(url.replace('https', 'Https'))}&token=x`).url.startsWith('Https'), true, 'se acepta y la app la normaliza');
+});

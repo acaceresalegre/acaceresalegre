@@ -159,6 +159,7 @@
       }
       applyPull(data);
       toast(`Sincronizado con la planilla${user ? ' como ' + user : ''}`, 'green');
+      if (isIOSBrowser()) setTimeout(openIOSNotice, 600);
     } catch (e) {
       Object.assign(sync, prev);
       saveSync();
@@ -168,6 +169,25 @@
         : e.message;
       toast(`No se pudo conectar: ${msg}`, 'red');
     }
+  }
+
+  // En iPhone, Safari y la app agregada a la pantalla de inicio guardan datos por separado: conectar en Safari
+  // no conecta la app del ícono. Se avisa y se ofrece copiar el enlace para pegarlo dentro de la app.
+  const isIOS = () => /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  const isStandalone = () => window.navigator.standalone === true || window.matchMedia('(display-mode: standalone)').matches;
+  const isIOSBrowser = () => isIOS() && !isStandalone();
+  const connectLink = () => `${location.origin}${location.pathname}#conectar=${encodeURIComponent(sync.url)}&token=${encodeURIComponent(sync.token)}&quien=${encodeURIComponent(sync.user || '')}`;
+
+  function openIOSNotice() {
+    openSheet(() => `<h3>Quedó conectada en Safari</h3>
+      <p class="lead">Si usás Cuentas Casa desde el ícono de la pantalla de inicio, esa app guarda sus datos aparte y todavía no está conectada.</p>
+      <ol class="card steps">
+        <li>Tocá <b>Copiar enlace</b>.</li>
+        <li>Abrí Cuentas Casa desde el <b>ícono de inicio</b>.</li>
+        <li>Tocá <b>⋯ → Pegar el enlace de conexión</b>.</li>
+      </ol>
+      <button class="primary" data-act="copy-link">Copiar enlace</button>
+      <button class="secondary" data-act="close-sheet">Uso la app en Safari, está bien así</button>`);
   }
 
   function disconnect() {
@@ -2024,8 +2044,10 @@
           e.preventDefault();
           const raw = form.url.value.replace(/\s+/g, '');
           // También se puede pegar el enlace de conexión completo que arma la planilla.
-          const pasted = raw.includes('#conectar=') ? L.parseConnectHash(raw.slice(raw.indexOf('#'))) : null;
-          const url = pasted ? pasted.url : raw;
+          const pasted = L.parseConnectLink(raw);
+          if (!pasted && /conectar/i.test(raw)) return toast('El enlace está incompleto. Volvé a copiarlo entero desde el mensaje.', 'red');
+          // El iPhone suele poner en mayúscula la primera letra: la dirección se normaliza.
+          const url = pasted ? pasted.url : raw.replace(/^https:\/\//i, 'https://');
           const token = pasted ? pasted.token : form.token.value.trim();
           if (!url) return toast('Pegá la dirección de la aplicación web (termina en /exec)', 'red');
           if (!/^https:\/\/script\.google\.com\/.+\/exec$/.test(url)) return toast('La dirección tiene que empezar con https://script.google.com/ y terminar en /exec', 'red');
@@ -2068,14 +2090,16 @@
           <div class="kv"><span>Última sincronización</span><b>${esc(when)}</b></div>
           ${status}
           <button class="secondary" data-act="sync-now">Sincronizar ahora</button>
+          <button class="secondary" data-act="copy-link">Copiar enlace para conectar otro dispositivo</button>
           <button class="danger-link" data-act="sync-off">Desconectar</button>
         </div>`;
     }
     return `<div class="card">
         <p class="lead" style="margin:0 0 10px">Conectá la app a la planilla para compartir los datos entre los dos. Lo más simple es abrir el enlace de «Cuentas Casa → 2. Conectar la app» en la planilla.</p>
         <form id="sync-form">
-          <input class="input" name="url" placeholder="Enlace de conexión o https://script.google.com/…/exec" autocomplete="off">
-          <input class="input" name="token" placeholder="Código de acceso" autocomplete="off" style="margin-top:8px">
+          ${navigator.clipboard && navigator.clipboard.readText ? '<button type="button" class="primary" style="margin:0 0 10px" data-act="paste-link">Pegar el enlace de conexión</button>' : ''}
+          <input class="input" name="url" placeholder="Enlace de conexión o https://script.google.com/…/exec" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" inputmode="url">
+          <input class="input" name="token" placeholder="Código de acceso" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" style="margin-top:8px">
           <div class="two" style="margin-top:8px">
             <label class="pill on" style="text-align:center"><input type="radio" name="quien" value="Alan" checked hidden> Alan</label>
             <label class="pill" style="text-align:center"><input type="radio" name="quien" value="Karo" hidden> Karo</label>
@@ -2308,6 +2332,20 @@
     },
     'form-save': () => saveForm(),
     'rates-update': () => updateRates(),
+    'copy-link': async () => {
+      try { await navigator.clipboard.writeText(connectLink()); toast('Enlace copiado. Ahora abrí la app desde el ícono de inicio.', 'green'); } catch (e) {
+        prompt('Copiá este enlace y pegalo en la app:', connectLink());
+      }
+    },
+    'close-sheet': () => closeSheet(),
+    'paste-link': async () => {
+      let text = '';
+      try { text = await navigator.clipboard.readText(); } catch (e) { return toast('No se pudo leer el portapapeles. Pegalo en el primer campo.', 'red'); }
+      const link = L.parseConnectLink(text);
+      if (!link) return toast('Lo copiado no es un enlace de conexión. Copiá el enlace entero del mensaje.', 'red');
+      closeSheet();
+      connect(link.url, link.token, link.user);
+    },
     'sync-now': async () => {
       sync.error = null;
       try {
@@ -2460,8 +2498,8 @@
   // Enlace de conexión generado desde la planilla (Cuentas Casa → Conectar la app).
   // Se lee al abrir y también cuando cambia el #: si la app ya estaba abierta, el enlace no recarga la página.
   function handleConnectLink() {
-    if (!/conectar=/.test(location.hash)) return false;
-    const link = L.parseConnectHash(location.hash);
+    if (!/conectar(=|%3D)/i.test(location.hash)) return false;
+    const link = L.parseConnectLink(location.hash);
     history.replaceState(null, '', location.pathname + location.search);
     if (!link) {
       toast('El enlace de conexión está incompleto. Volvé a copiarlo desde la planilla.', 'red');

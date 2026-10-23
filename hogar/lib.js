@@ -1321,14 +1321,25 @@
   // Lee el enlace de conexión que arma la planilla: #conectar=URL&token=...&quien=Alan
   function parseConnectHash(hash) {
     const p = new URLSearchParams(String(hash || '').replace(/^#/, ''));
-    const url = p.get('conectar');
-    const token = p.get('token');
-    if (!url || !token || !/^https:\/\/script\.google(usercontent)?\.com\//.test(url)) return null;
-    return { url, token, user: p.get('quien') || '' };
+    const url = (p.get('conectar') || '').trim();
+    const token = (p.get('token') || '').trim();
+    if (!url || !token || !/^https:\/\/script\.google(usercontent)?\.com\//i.test(url)) return null;
+    return { url, token, user: (p.get('quien') || '').trim() };
+  }
+
+  // Acepta el enlace de conexión como venga pegado: completo, solo la parte después del #, con el # convertido
+  // en %23 por la app desde donde se copió, con espacios o saltos de línea de WhatsApp o del mail.
+  function parseConnectLink(raw) {
+    let s = String(raw || '').replace(/\s+/g, '');
+    if (!/conectar(=|%3D)/i.test(s)) return null;
+    if (!/conectar=/i.test(s)) { try { s = decodeURIComponent(s); } catch (e) { return null; } }
+    s = s.replace(/%23conectar=/i, '#conectar=');
+    const i = s.search(/conectar=/i);
+    return parseConnectHash('conectar=' + s.slice(i + 'conectar='.length));
   }
 
   const api = {
-    catLabel, parseAlerts, budgetLimits, sheetToState, stateToRows, diffRows, parseConnectHash,
+    catLabel, parseAlerts, budgetLimits, sheetToState, stateToRows, diffRows, parseConnectHash, parseConnectLink,
     toISO, parseISO, todayISO, monthKey, dayOf, addMonths, daysInMonth, dateInMonth, daysBetween,
     monthName, monthLabel, shortDate, longDate, uid, MONTHS, MON,
     CURRENCIES, convert, formatMoney, formatShort, cleanDigits, groupDigits, toCOP,
