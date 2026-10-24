@@ -83,8 +83,11 @@ const rowsOf = (gas, name) => {
     console.log('ok');
   };
 
+  let current = null;
   async function open(device, file) {
     const ctx = await browser.newContext(device);
+    // Como la app instalada en la pantalla de inicio (así no aparece el aviso de Safari en iPhone).
+    await ctx.addInitScript(() => Object.defineProperty(navigator, 'standalone', { get: () => true }));
     await ctx.route(SCRIPT + '*', async (route) => {
       const out = gas.post(JSON.parse(route.request().postData() || '{}'));
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(out) });
@@ -93,6 +96,7 @@ const rowsOf = (gas, name) => {
     page.on('pageerror', (e) => errors.push(`${file}: ${e.message}`));
     page.on('console', (m) => { if (m.type() === 'error' && !/fonts\.g|Failed to load resource/.test(m.text())) errors.push(`${file}: ${m.text()}`); });
     page.on('dialog', (d) => d.accept());
+    current = page;
     return { ctx, page };
   }
 
@@ -102,19 +106,24 @@ const rowsOf = (gas, name) => {
     assert.ok(w <= 1, `${where}: la pantalla se desborda ${w}px a lo ancho`);
   };
   const sheetOpen = (page) => page.waitForSelector('#sheet:not([hidden])');
-  const closeSheet = async (page) => { await page.keyboard.press('Escape'); await page.waitForTimeout(250); };
+  const closeSheet = async (page) => {
+    if (!(await page.locator('#sheet.open').count())) return;
+    await page.keyboard.press('Escape');
+    await page.waitForFunction(() => !document.querySelector('#sheet.open'), null, { timeout: 5000 });
+  };
 
   try {
     const { ctx, page } = await open({ ...devices['iPhone 13'] }, 'celular');
     await step('conectar con el enlace de la planilla', async () => {
       await page.goto(`${BASE}#conectar=${encodeURIComponent(SCRIPT)}&token=tok-recorrido&quien=Alan`);
       await page.waitForFunction(() => (JSON.parse(localStorage.getItem('cuentas-casa-sync') || '{}').user === 'Alan'), null, { timeout: 8000 });
-      await page.waitForTimeout(500);
+      await page.waitForTimeout(800);
       await closeSheet(page);
     });
 
     await step('cada pantalla del celular', async () => {
       const go = async (tab, extra) => {
+        await closeSheet(page);
         await page.click(`.tabbar [data-tab="${tab}"]`);
         await page.waitForTimeout(250);
         if (extra) { await page.click(extra); await page.waitForTimeout(250); }
@@ -268,6 +277,7 @@ const rowsOf = (gas, name) => {
   } catch (e) {
     console.log('FALLÓ');
     console.error(e.message);
+    if (current) await current.screenshot({ path: path.join(OUT, 'fallo.png') }).catch(() => {});
     if (errors.length) console.error('Errores de la página:', errors);
     process.exitCode = 1;
   } finally {
