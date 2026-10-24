@@ -386,3 +386,23 @@ test('respaldo semanal: copia la planilla en la carpeta Backup y guarda solo las
   gas.run('respaldarAhora');
   assert.match(gas.ui.alerts.at(-1), /Backup/);
 });
+
+test('presupuesto: la app edita una categoría del mes y las demás siguen tomando el del año anterior', () => {
+  const p = planilla();
+  p['Presupuesto'] = [['Mes', 'Categoría', 'Subcategoría', 'Moneda', 'Importe'],
+    [D('2025-10-01'), 'Alimentación', 'Supermercado', 'COP', 700000], [D('2025-10-01'), 'Ocio', 'Salidas', 'COP', 300000]];
+  const gas = createGas(p, { now: NOW });
+  gas.post({ token: 'secreto', ops: [
+    { table: 'Presupuesto', op: 'upsert', row: { 'Mes': '2026-10-01', 'Categoría': 'Alimentación', 'Subcategoría': 'Supermercado', 'Moneda': 'COP', 'Importe': 900000 } },
+  ] });
+  gas.post({ token: 'secreto', ops: [
+    { table: 'Presupuesto', op: 'upsert', row: { 'Mes': '2026-10-01', 'Categoría': 'Alimentación', 'Subcategoría': 'Supermercado', 'Importe': 950000 } },
+  ] });
+  const filas = rowsOf(gas, 'Presupuesto');
+  assert.equal(filas.length, 3, 'la segunda vez actualiza la misma fila');
+  assert.ok(filas[2][0] instanceof Date, 'el mes queda como fecha');
+  assert.equal(filas[2][4], 950000);
+  const d = gas.sandbox.datosMes('2026-10');
+  assert.equal(d.cats['Alimentación'].limite, 950000);
+  assert.equal(d.cats['Ocio'].limite, 300000, 'Ocio no tiene presupuesto en octubre 2026: usa el de 2025');
+});

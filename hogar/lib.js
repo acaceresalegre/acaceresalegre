@@ -395,8 +395,29 @@
     // Cerrada con menos de lo facturado: retención en la fuente, descuento o lo que no se va a cobrar.
     const closed = Boolean(r.collected);
     const status = closed || pending < 0.5 ? 'done' : collected > 0 ? 'partial' : 'pending';
-    return { payments, collected, pending: closed ? 0 : pending, status, writtenOff: closed ? pending : 0,
+    const writtenOff = closed ? pending : 0;
+    // De lo que no se cobró, la retención en la fuente es un anticipo del impuesto de renta (saldo a favor), no una pérdida.
+    const withheld = Math.min(writtenOff, Number(r.withheld) || 0);
+    return { payments, collected, pending: closed ? 0 : pending, status, writtenOff, withheld, lost: writtenOff - withheld,
       lastDate: payments.length ? payments[payments.length - 1].date : null };
+  }
+
+  // Retenciones en la fuente a favor al cierre: las de las facturas cerradas hasta esa fecha, por año.
+  // Se descuentan en la declaración de renta del año siguiente; se dejan de mostrar después de octubre de ese año.
+  function retentionsAt(state, end) {
+    const rates = state.settings.rates;
+    const y = Number(end.slice(0, 4));
+    const byYear = new Map();
+    for (const r of state.receivables) {
+      if (!r.collected || !(Number(r.withheld) > 0)) continue;
+      const on = r.collectedAt || r.due;
+      if (!on || on > end) continue;
+      const ry = Number(on.slice(0, 4));
+      if (ry < y - 1 || (ry === y - 1 && Number(end.slice(5, 7)) > 10)) continue;
+      const v = convert(receivableInfo(state, r).withheld, r.cur, 'COP', rates);
+      byYear.set(ry, (byYear.get(ry) || 0) + v);
+    }
+    return [...byYear].sort((a, b) => a[0] - b[0]).map(([year, amount]) => ({ year, amount }));
   }
 
   // Estado de resultados del mes, por lo devengado: ingresos y gastos del mes aunque no se hayan cobrado o pagado.
@@ -416,6 +437,13 @@
     const expense = new Map();
     let unpaid = 0;
     for (const m of state.movements) if (m.type === 'exp' && inMonth(m.date)) add(expense, m.cat, toCOP(m, rates));
+    // Facturas emitidas cerradas con menos de lo facturado (descuento o lo que no se va a cobrar, sin la retención):
+    // el ingreso se contó entero al emitirlas, así que la diferencia es gasto del mes en que se cerraron.
+    for (const r of state.receivables) {
+      if (!r.issued || !r.collected || !inMonth(r.collectedAt || r.due)) continue;
+      const lost = receivableInfo(state, r).lost;
+      if (lost > 0.5) add(expense, 'Facturas no cobradas', convert(lost, r.cur, 'COP', rates));
+    }
     for (const b of state.bills) {
       if (b.loanId || !inMonth(b.due)) continue;
       add(expense, b.cat, toCOP(b, rates));
@@ -481,11 +509,12 @@
     const payables = state.bills.filter((b) => b.due <= end && !(b.paid && (b.paidAt || b.due) <= end))
       .map((b) => ({ name: b.name, amount: toCOP(b, rates), due: b.due }));
     const sum = (xs) => xs.reduce((s, x) => s + x.amount, 0);
-    const assets = { cash: sum(groups.cash), invest: sum(groups.invest), receivables: sum(receivables), asset: sum(groups.asset) };
-    const totalAssets = assets.cash + assets.invest + assets.receivables + assets.asset;
+    const retentions = retentionsAt(state, end);
+    const assets = { cash: sum(groups.cash), invest: sum(groups.invest), receivables: sum(receivables), retentions: sum(retentions), asset: sum(groups.asset) };
+    const totalAssets = assets.cash + assets.invest + assets.receivables + assets.retentions + assets.asset;
     const totalCards = sum(groups.card);
     const totalLiabilities = sum(loans) + totalCards + sum(payables);
-    return { key, groups, receivables, loans, payables, assets, totalAssets, totalLoans: sum(loans), totalCards, totalPayables: sum(payables),
+    return { key, groups, receivables, retentions, loans, payables, assets, totalAssets, totalLoans: sum(loans), totalCards, totalPayables: sum(payables),
       totalLiabilities, netWorth: totalAssets - totalLiabilities, missing, noData };
   }
 
@@ -1109,14 +1138,21 @@
   const str = (v) => (v === undefined || v === null ? '' : String(v).trim());
   const num = (v) => (typeof v === 'number' ? v : parseNumber(v) || 0);
 
-  // Límite de cada categoría para el mes: suma del presupuesto del mes, o del mismo mes del año anterior.
+  // Filas de presupuesto de una categoría para el mes; si ese mes no tiene, las del mismo mes del año anterior.
+  function budgetRowsFor(rows, group, key) {
+    const pick = (k) => rows.filter((r) => r['Categoría'] === group && str(r['Mes']).slice(0, 7) === k);
+    const own = pick(key);
+    return own.length ? { rows: own, from: key } : { rows: pick(addMonths(key, -12)), from: addMonths(key, -12) };
+  }
+
+  // Límite de cada categoría para el mes: suma de su presupuesto del mes, o del mismo mes del año anterior.
+  // Se decide por categoría: editar una desde la app no deja a las demás sin presupuesto.
   function budgetLimits(rows, key, rates) {
-    const pick = (k) => rows.filter((r) => str(r['Mes']).slice(0, 7) === k);
-    let month = pick(key);
-    if (!month.length) month = pick(addMonths(key, -12));
     const out = {};
-    for (const r of month) {
-      out[r['Categoría']] = (out[r['Categoría']] || 0) + convert(num(r['Importe']), str(r['Moneda']) || 'COP', 'COP', rates);
+    for (const group of new Set(rows.map((r) => r['Categoría']))) {
+      for (const r of budgetRowsFor(rows, group, key).rows) {
+        out[group] = (out[group] || 0) + convert(num(r['Importe']), str(r['Moneda']) || 'COP', 'COP', rates);
+      }
     }
     return out;
   }
@@ -1158,7 +1194,8 @@
       if (!groups.has(cat)) groups.set(cat, []);
       if (sub && !groups.get(cat).includes(sub)) groups.get(cat).push(sub);
     }
-    s.budgetRows = t('Presupuesto').map((r) => ({ 'Mes': str(r['Mes']), 'Categoría': str(r['Categoría']), 'Moneda': str(r['Moneda']), 'Importe': num(r['Importe']) }));
+    s.budgetRows = t('Presupuesto').filter((r) => str(r['Mes']) && str(r['Categoría'])).map((r) => ({ 'Mes': str(r['Mes']), 'Categoría': str(r['Categoría']),
+      'Subcategoría': str(r['Subcategoría']), 'Moneda': str(r['Moneda']) || 'COP', 'Importe': num(r['Importe']) }));
     const limits = budgetLimits(s.budgetRows, monthKey(today), s.settings.rates);
     s.categories = [...groups].map(([code, subs]) => ({ name: label(code), group: code, limit: Math.round(limits[code] || 0), subs }));
     if (incomes.length) s.incomeCats = incomes;
@@ -1219,6 +1256,7 @@
       id: str(r['ID']), client: str(r['Cliente']), issued: str(r['Fecha de emisión']) || null, due: str(r['Vence']),
       amount: num(r['Valor']), cur: str(r['Moneda']) || 'COP', collected: str(r['Estado']) === 'Cobrada',
       incomeId: str(r['Movimiento ID']) || null, collectedAt: str(r['Fecha de cobro']) || null,
+      ...(num(r['Retención']) > 0 ? { withheld: num(r['Retención']) } : {}),
     }));
     s.loans = t('Deudas').filter((r) => r['ID']).map((r) => ({
       id: str(r['ID']), name: str(r['Préstamo']), cur: str(r['Moneda']) || 'COP', installment: num(r['Próxima cuota']),
@@ -1264,6 +1302,8 @@
       'Cuentas y bienes': (s.accounts || []).map((a) => ({
         'ID': a.id, 'Nombre': a.name, 'Tipo': a.kind, 'Moneda': a.cur, 'Activa': 'Sí', 'Comentarios': a.note || '',
       })),
+      // Solo si se leyó de la planilla: sin filas cargadas no se manda nada (y no se borra el presupuesto).
+      ...(Array.isArray(s.budgetRows) && s.synced ? { 'Presupuesto': s.budgetRows.map((r) => ({ ...r })) } : {}),
       'Saldos': (s.balances || []).map((b) => {
         const a = (s.accounts || []).find((x) => x.id === b.accountId);
         // Si la cuenta se quitó de la lista, sus saldos quedan como estaban en la planilla.
@@ -1291,6 +1331,7 @@
           'ID': r.id, 'Fecha de emisión': r.issued || '', 'Cliente': r.client, 'Moneda': r.cur, 'Valor': r.amount, 'Vence': r.due,
           'Estado': st === 'done' ? 'Cobrada' : st === 'partial' ? 'Parcial' : 'Pendiente', 'Fecha de cobro': r.collected ? (r.collectedAt || '') : '',
           'Movimiento ID': r.incomeId || '',
+          'Retención': r.withheld || '',
         };
       }),
       'Categorías': [
@@ -1306,8 +1347,11 @@
     };
   }
 
-  const ROW_KEYS = { 'Categorías': ['Categoría', 'Subcategoría'], 'Ajustes': ['Ajuste'], 'Saldos': ['Cuenta ID', 'Mes'] };
+  const ROW_KEYS = { 'Categorías': ['Categoría', 'Subcategoría'], 'Ajustes': ['Ajuste'], 'Saldos': ['Cuenta ID', 'Mes'],
+    'Presupuesto': ['Mes', 'Categoría', 'Subcategoría'] };
   const rowKey = (table, row) => (ROW_KEYS[table] || ['ID']).map((k) => str(row[k])).join('|');
+
+  const BASELINE_TABLES = ['Presupuesto'];
 
   // Cambios entre dos versiones de las filas: upsert de lo nuevo o modificado, delete de lo que ya no está.
   // Una columna que la versión anterior no conocía (por ejemplo «Pagó») cuenta como vacía, así una
@@ -1316,13 +1360,28 @@
     && Object.keys(a).every((k) => k in b);
   function diffRows(prev, next) {
     const ops = [];
-    for (const table of Object.keys(next)) {
-      const before = new Map((prev && prev[table] || []).map((r) => [rowKey(table, r), r]));
-      const seen = new Set();
-      for (const row of next[table]) {
-        const k = rowKey(table, row);
-        seen.add(k);
-        const old = before.get(k);
+    const group = (rows) => {
+      const m = new Map();
+      for (const r of rows || []) { const k = rowKey(table, r); if (!m.has(k)) m.set(k, []); m.get(k).push(r); }
+      return m;
+    };
+    let table;
+    for (table of Object.keys(next)) {
+      // Pestaña que la app empieza a escribir en esta versión: la primera vez solo se toma como punto de partida.
+      if (prev && !prev[table] && BASELINE_TABLES.includes(table)) continue;
+      const before = group(prev && prev[table]);
+      const after = group(next[table]);
+      for (const [k, rows] of after) {
+        const olds = before.get(k) || [];
+        if (olds.length > 1 || rows.length > 1) {
+          // Filas repetidas con la misma clave (cargadas así a mano): si cambiaron, se reemplazan todas.
+          if (JSON.stringify(olds) === JSON.stringify(rows)) continue;
+          ops.push({ table, op: 'delete', row: olds[0] });
+          rows.forEach((row) => ops.push({ table, op: 'upsert', row }));
+          continue;
+        }
+        const row = rows[0];
+        const old = olds[0];
         if (!old) { ops.push({ table, op: 'upsert', row }); continue; }
         if (sameRow(old, row)) continue;
         // Fila existente: solo la clave y lo que cambió, así no se pisan los cambios del otro en otras columnas.
@@ -1331,9 +1390,7 @@
         for (const c of Object.keys(row)) if (JSON.stringify(old[c] ?? '') !== JSON.stringify(row[c] ?? '')) part[c] = row[c];
         ops.push({ table, op: 'upsert', row: part });
       }
-      for (const r of (prev && prev[table]) || []) {
-        if (!seen.has(rowKey(table, r))) ops.push({ table, op: 'delete', row: r });
-      }
+      for (const [k, olds] of before) if (!after.has(k)) ops.push({ table, op: 'delete', row: olds[0] });
     }
     return ops;
   }
@@ -1359,7 +1416,7 @@
   }
 
   const api = {
-    catLabel, parseAlerts, budgetLimits, sheetToState, stateToRows, diffRows, parseConnectHash, parseConnectLink,
+    catLabel, parseAlerts, budgetLimits, budgetRowsFor, sheetToState, stateToRows, diffRows, parseConnectHash, parseConnectLink,
     toISO, parseISO, todayISO, monthKey, dayOf, addMonths, daysInMonth, dateInMonth, daysBetween,
     monthName, monthLabel, shortDate, longDate, uid, MONTHS, MON,
     CURRENCIES, convert, formatMoney, formatShort, cleanDigits, groupDigits, toCOP,
@@ -1367,7 +1424,7 @@
     elapsedDays, categoryStats, monthSummary, buildAlerts, monthSeries, dailySpend, filterMovements,
     peopleOf, personOf, suggestCategory, spendByPerson, goalProgress,
     ACCOUNT_KINDS, kindClass, accountBalance, loanBalanceAt, incomeStatement, balanceSheet, cashFlow,
-    parseDays, inferIncomePlan, paycheckPlan, netWorthSeries, debtPlan, receivableInfo,
+    retentionsAt, parseDays, inferIncomePlan, paycheckPlan, netWorthSeries, debtPlan, receivableInfo,
     toICS, toCSV, parseMovementRows, parseNumber, cellToISO, parseReceipt,
     baseState, sampleState, normalizeState, clearSamples,
   };

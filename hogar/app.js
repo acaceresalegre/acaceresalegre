@@ -12,9 +12,15 @@
   const TESSERACT_SRC = 'https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js';
   const NOVEDADES_KEY = 'cuentas-casa-novedades';
   // Versión mínima de Codigo.gs que esta app necesita (CODIGO_VERSION en la planilla).
-  const CODIGO_REQUERIDO = 14;
+  const CODIGO_REQUERIDO = 15;
   // La primera es la versión actual de la app; se muestra una vez después de cada actualización.
   const NOVEDADES = [
+    { v: 15, items: [
+      'Presupuesto editable desde la app: en Presupuesto tocá una categoría → Editar. Se puede aplicar hasta diciembre.',
+      'Facturas mensuales editables: monto, día y categoría (Ajustes → Facturas mensuales, o desde la factura → Editar).',
+      'Retención en la fuente: al cobrar una factura emitida con menos de lo facturado, elegí «Retención». Queda como saldo a favor para la declaración de renta, no como pérdida.',
+      'Devoluciones: + → Gasto → Devolución. Resta del gasto de la categoría.',
+    ] },
     { v: 14, items: [
       'Respaldo semanal: los domingos se guarda una copia de la planilla en la carpeta «Backup» de tu Drive (quedan las últimas 12).',
       'La app abre sin conexión. Lo que cargues se guarda en el teléfono y se envía cuando vuelve internet.',
@@ -282,14 +288,15 @@
 
   const accName = (id) => ((state.accounts || []).find((a) => a.id === id) || {}).name || (id ? 'Cuenta borrada' : 'Otra');
   const xferLabel = (m) => `${accName(m.from)} → ${accName(m.to)}`;
-  const movTitle = (m) => m.note || (m.type === 'save' ? `${m.amount < 0 ? 'Retiro de' : 'Aporte a'} ${m.cat}` : m.type === 'xfer' ? xferLabel(m) : m.sub || m.cat);
-  const amtCls = (m) => (m.type === 'inc' ? 'inc' : m.type === 'save' ? 'save' : m.type === 'xfer' ? 'xfer' : '');
+  const isRefund = (m) => m.type === 'exp' && m.amount < 0;
+  const movTitle = (m) => m.note || (isRefund(m) ? `Devolución · ${m.sub || m.cat}` : m.type === 'save' ? `${m.amount < 0 ? 'Retiro de' : 'Aporte a'} ${m.cat}` : m.type === 'xfer' ? xferLabel(m) : m.sub || m.cat);
+  const amtCls = (m) => (m.type === 'inc' || isRefund(m) ? 'inc' : m.type === 'save' ? 'save' : m.type === 'xfer' ? 'xfer' : '');
   const amtSign = (m) => (m.type === 'inc' ? '+' : (m.type === 'save' && m.amount > 0) || m.type === 'xfer' ? '→ ' : '');
 
   function movRow(m) {
     const when = L.monthKey(m.date) === curMonth ? `día ${L.dayOf(m.date)}` : dateTxt(m.date);
     const sub = (m.type === 'xfer' ? ['Transferencia', m.note ? xferLabel(m) : '', when, L.personOf(m)]
-      : [m.type === 'save' ? 'Ahorro' : '', m.cat, m.sub, when, L.personOf(m)]).filter(Boolean).join(' · ');
+      : [m.type === 'save' ? 'Ahorro' : isRefund(m) ? 'Devolución' : '', m.cat, m.sub, when, L.personOf(m)]).filter(Boolean).join(' · ');
     return `<button class="mov" data-act="mov" data-id="${esc(m.id)}">
       <span class="grow"><b>${esc(movTitle(m))}</b><small>${esc(sub)}</small></span>
       <span class="amt ${amtCls(m)}">${amtSign(m)}${esc(shown(m))}</span>
@@ -512,7 +519,7 @@
       const isDone = info.status === 'done';
       const sub = info.status === 'partial'
         ? `Cobrado ${esc(L.formatMoney(info.collected, r.cur))} · falta ${esc(L.formatMoney(info.pending, r.cur))}`
-        : isDone ? (info.writtenOff > 0.5 ? `Cobrado ${esc(L.formatMoney(info.collected, r.cur))} · sin cobrar ${esc(L.formatMoney(info.writtenOff, r.cur))}` : 'Cobrada')
+        : isDone ? (info.writtenOff > 0.5 ? `Cobrado ${esc(L.formatMoney(info.collected, r.cur))}${info.withheld > 0.5 ? ` · retención ${esc(L.formatMoney(info.withheld, r.cur))}` : ''}${info.lost > 0.5 ? ` · sin cobrar ${esc(L.formatMoney(info.lost, r.cur))}` : ''}` : 'Cobrada')
           : `Vence el ${esc(L.shortDate(r.due))} · ${when}`;
       return `<button class="bill recv ${isDone ? 'paid' : ''}" data-act="recv" data-id="${esc(r.id)}">
         <span class="body"><span class="grow"><span class="name">${esc(r.client)}</span>
@@ -528,6 +535,7 @@
         <hr>
         <div class="line"><span>Facturas pendientes</span><b>${pend.length}${partial ? ` · ${partial} con cobro parcial` : ''}</b></div>
         <div class="line"><span>Vencidas</span><b class="${overdue ? 'neg' : ''}">${overdue}</b></div>
+        ${L.retentionsAt(state, today).map((x) => `<div class="line"><span>Retención en la fuente ${x.year} <small>a favor en la renta</small></span><b class="num">${esc(money(x.amount))}</b></div>`).join('')}
       </section>
       ${pend.length ? `<div class="group-title">Pendientes</div><div class="stack">${pend.map(row).join('')}</div>` : '<div class="card empty" style="margin-top:18px">Todo cobrado</div>'}
       ${done.length ? `<div class="group-title green">Cobradas</div><div class="stack">${done.map(row).join('')}</div>` : ''}
@@ -903,6 +911,7 @@
       ${b.groups.cash.length ? `<div class="st-sub">Disponible</div>${b.groups.cash.map(acc).join('')}` : ''}
       ${b.groups.invest.length ? `<div class="st-sub">Inversiones</div>${b.groups.invest.map(acc).join('')}` : ''}
       ${b.receivables.length ? line(`Por cobrar <small>${b.receivables.length} factura${b.receivables.length > 1 ? 's' : ''}</small>`, b.assets.receivables, 'ind') : ''}
+      ${b.retentions.map((x) => line(`Retención en la fuente <small>a favor, renta ${x.year}</small>`, x.amount, 'ind')).join('')}
       ${b.groups.asset.length ? `<div class="st-sub">Bienes</div>${b.groups.asset.map(acc).join('')}` : ''}
       ${b.missing.length ? `<div class="st-row ind muted"><span>Sin saldo: ${b.missing.map((a) => esc(a.name)).join(', ')}</span><b>—</b></div>` : ''}
       ${line('Total activos', b.totalAssets, 'sub')}
@@ -1334,9 +1343,92 @@
         <span class="field-label">Medio de pago</span>
         <div class="pills">${pills(state.methods.map((m) => [m, m]), (v) => v === b.method, 'bill-method', `data-id="${esc(b.id)}"`)}</div>
         <button class="primary" data-act="toggle-bill" data-id="${esc(b.id)}">${b.paid ? 'Desmarcar pago' : 'Marcar como pagada'}</button>
+        ${b.loanId ? '' : `<button class="secondary" data-act="bill-edit" data-id="${esc(b.id)}">Editar${b.templateId ? ' (este mes o todos los meses)' : ''}</button>`}
         <button class="secondary" data-act="ics-bill" data-id="${esc(b.id)}">Agregar al calendario</button>
         ${b.templateId ? `<button class="danger-link" data-act="bill-stop" data-id="${esc(b.id)}">Dejar de repetir</button>` : ''}
         <button class="danger-link" data-act="bill-del" data-id="${esc(b.id)}">Eliminar factura</button>`;
+    });
+  }
+
+  // --- Editar una factura o una factura mensual ---
+  // Desde una factura: cambia esa y, si se repite y se elige, también la plantilla y los meses siguientes sin pagar.
+  // Desde Ajustes → Facturas mensuales (sin factura): cambia la plantilla y las facturas sin pagar desde este mes.
+  let billForm = null;
+  function openBillEdit(billId, recId) {
+    const b = billId && state.bills.find((x) => x.id === billId);
+    const r = state.recurring.find((x) => x.id === (b ? b.templateId : recId));
+    const src = b || r;
+    if (!src) return;
+    billForm = { billId: b ? b.id : null, recId: r ? r.id : null, name: src.name, digits: String(Math.round(src.amount)), cur: src.cur,
+      cat: src.cat, sub: src.sub || '', due: b ? b.due : null, day: r ? r.day : null, forward: Boolean(r) };
+    openSheet(() => {
+      const f = billForm;
+      const catObj = state.categories.find((c) => c.name === f.cat);
+      return `<h3>${f.billId ? 'Editar factura' : 'Editar factura mensual'}</h3>
+        <span class="field-label">Nombre</span>
+        <input class="input" id="b-name" maxlength="60" value="${esc(f.name)}">
+        <div class="amount-row"><span class="cur">${f.cur === 'COP' ? '$' : f.cur === 'ARS' ? 'AR$' : 'US$'}</span>
+          <input id="b-amount" inputmode="numeric" autocomplete="off" value="${L.groupDigits(f.digits)}" aria-label="Monto"></div>
+        <div class="pills" style="margin-top:10px">${pills(L.CURRENCIES.map((c) => [c, c]), (v) => v === f.cur, 'bf-cur')}</div>
+        ${f.billId ? `<span class="field-label">Vencimiento</span><input class="input" id="b-due" type="date" value="${esc(f.due)}">`
+          : `<span class="field-label">Día de vencimiento</span><input class="input num" id="b-day" inputmode="numeric" value="${esc(f.day)}">`}
+        <span class="field-label">Categoría</span>
+        <select class="input" id="b-cat">${state.categories.map((c) => `<option ${c.name === f.cat ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select>
+        ${catObj && catObj.subs.length ? `<select class="input" id="b-sub" style="margin-top:8px"><option value="">Sin subcategoría</option>${catObj.subs.map((x) => `<option ${x === f.sub ? 'selected' : ''}>${esc(x)}</option>`).join('')}</select>` : ''}
+        ${f.billId && f.recId ? `<div class="card setting-row" style="margin-top:12px"><span><b>También los meses siguientes</b><small>Cambia la factura mensual y las que vienen sin pagar</small></span>
+          <button class="switch ${f.forward ? 'on' : ''}" data-act="bf-forward" aria-label="También los meses siguientes" aria-pressed="${f.forward}"></button></div>` : ''}
+        ${!f.billId ? '<div class="notice">Cambia la factura mensual y las facturas sin pagar desde este mes. Las pagadas no cambian.</div>' : ''}
+        <button class="primary" data-act="bf-save">Guardar cambios</button>`;
+    }, (sheet) => {
+      const amount = sheet.querySelector('#b-amount');
+      amount.oninput = () => { billForm.digits = L.cleanDigits(amount.value); amount.value = L.groupDigits(billForm.digits); };
+      const bind = (sel, key) => { const el = sheet.querySelector(sel); if (el) el.oninput = () => { billForm[key] = el.value; }; };
+      bind('#b-name', 'name');
+      bind('#b-due', 'due');
+      bind('#b-day', 'day');
+      bind('#b-sub', 'sub');
+      const cat = sheet.querySelector('#b-cat');
+      cat.onchange = () => { billForm.cat = cat.value; billForm.sub = ''; renderSheet(); };
+    });
+  }
+
+  function saveBillEdit() {
+    const f = billForm;
+    const amount = Number(f.digits) || 0;
+    const name = f.name.trim();
+    if (!name || !amount) return toast('Completá el nombre y el monto', 'red');
+    const fields = { name, amount, cur: f.cur, cat: f.cat, sub: f.sub };
+    const b = f.billId && state.bills.find((x) => x.id === f.billId);
+    if (b) {
+      if (!f.due) return toast('Elegí el vencimiento', 'red');
+      Object.assign(b, fields, { due: f.due });
+    }
+    const r = f.recId && state.recurring.find((x) => x.id === f.recId);
+    if (r && (!b || f.forward)) {
+      const day = b ? L.dayOf(f.due) : Math.round(Number(f.day));
+      if (!(day >= 1 && day <= 31)) return toast('El día tiene que ser de 1 a 31', 'red');
+      Object.assign(r, fields, { day });
+      // Las facturas sin pagar que vienen (desde el mes siguiente a la editada, o desde este mes).
+      const fromKey = b ? L.addMonths(L.monthKey(b.due), 1) : curMonth;
+      state.bills.forEach((x) => {
+        if (x.templateId !== r.id || x.paid || x === b || L.monthKey(x.due) < fromKey) return;
+        Object.assign(x, fields, { due: L.dateInMonth(L.monthKey(x.due), day) });
+      });
+    }
+    toast(r && (!b || f.forward) ? `${name}: cambia todos los meses` : 'Factura actualizada', 'green');
+    billForm = null;
+    closeSheet();
+    save();
+  }
+
+  function openRecurringList() {
+    openSheet(() => {
+      const list = state.recurring.filter((r) => !r.loanId).sort((a, b) => a.day - b.day || a.name.localeCompare(b.name));
+      return `<h3>Facturas mensuales</h3>
+        <p class="lead">Se crean solas cada mes. Tocá una para cambiar el monto, el día o la categoría.</p>
+        <div class="list-card">${list.length ? list.map((r) => `<button class="mov" data-act="rec-edit" data-id="${esc(r.id)}">
+          <span class="grow"><b>${esc(r.name)}</b><small>Día ${r.day} · ${esc([r.cat, r.sub].filter(Boolean).join(' · '))}</small></span>
+          <span class="amt">${esc(L.formatMoney(r.amount, r.cur))}</span></button>`).join('') : '<div class="empty">No hay facturas mensuales. Se crean con + → Factura → «Se repite cada mes».</div>'}</div>`;
     });
   }
 
@@ -1374,7 +1466,8 @@
           <div class="kv"><span>Del límite</span><b>${s.limit ? pctTxt(s.pct) : '—'}</b></div>
           <div class="kv"><span>Proyección de cierre</span><b class="num">${esc(money(s.projection))}${s.limit ? ` · ${pctTxt(s.projPct)}` : ''}</b></div>
         </div>
-        ${state.synced ? `<div class="notice">Límite del mes: ${esc(money(c.limit))}. Se edita en la pestaña Presupuesto de la planilla.</div>` : `
+        ${state.synced ? `<div class="card setting-row"><span><b>Límite de ${esc(L.monthName(curMonth))}: ${esc(money(s.limit))}</b><small>Por subcategoría, en la pestaña Presupuesto</small></span>
+          <button class="pill on" data-act="budget-edit" data-id="${esc(name)}">Editar</button></div>` : `
         <span class="field-label">Límite mensual (COP)</span>
         <div class="stepper">
           <button data-act="limit-step" data-v="-50000" aria-label="Restar 50.000">−</button>
@@ -1405,6 +1498,70 @@
     });
   }
 
+  // --- Presupuesto de una categoría (planilla conectada) ---
+  // Edita las filas de la pestaña Presupuesto (mes × categoría × subcategoría) de este mes y, si se elige, hasta diciembre.
+  let budForm = null;
+  function openBudgetEdit(name) {
+    const c = state.categories.find((x) => x.name === name);
+    if (!c) return;
+    const group = c.group || name;
+    const { rows, from } = L.budgetRowsFor(state.budgetRows || [], group, curMonth);
+    const subs = [...new Set([...rows.map((r) => r['Subcategoría']), ...(c.subs || [])])];
+    if (!subs.length) subs.push('');
+    const values = {};
+    const curs = {};
+    const had = {};
+    subs.forEach((sub) => {
+      const rs = rows.filter((r) => r['Subcategoría'] === sub);
+      had[sub] = rs.length > 0;
+      values[sub] = rs.length ? String(Math.round(rs.reduce((t, r) => t + (Number(r['Importe']) || 0), 0))) : '';
+      curs[sub] = (rs[0] && rs[0]['Moneda']) || 'COP';
+    });
+    budForm = { name, group, subs, values, curs, had, from, forward: true };
+    const total = () => budForm.subs.reduce((t, sub) => t + L.convert(Number(budForm.values[sub]) || 0, budForm.curs[sub], 'COP', rates()), 0);
+    openSheet(() => {
+      const f = budForm;
+      const last = L.addMonths(curMonth, 12 - Number(curMonth.slice(5, 7)));
+      return `<h3>Presupuesto · ${esc(name)}</h3>
+        <p class="lead">${esc(cap(L.monthLabel(curMonth)))}${f.from !== curMonth && rows.length ? ` · basado en ${esc(L.monthLabel(f.from))}` : ''}</p>
+        ${f.subs.map((sub) => `<span class="field-label">${esc(sub || 'Toda la categoría')}${f.curs[sub] !== 'COP' ? ` <small class="hint">· ${esc(f.curs[sub])}</small>` : ''}</span>
+          <div class="amount-row small"><span class="cur">${f.curs[sub] === 'COP' ? '$' : f.curs[sub] === 'ARS' ? 'AR$' : 'US$'}</span>
+            <input data-bud="${esc(sub)}" inputmode="numeric" autocomplete="off" placeholder="0" value="${L.groupDigits(f.values[sub])}" aria-label="Presupuesto de ${esc(sub || name)}"></div>`).join('')}
+        <div class="kv" style="margin-top:14px"><span>Total del mes</span><b class="num" id="bud-total">${esc(money(total()))}</b></div>
+        ${last !== curMonth ? `<div class="card setting-row" style="margin-top:12px"><span><b>Aplicar hasta diciembre</b><small>Los meses de ${esc(L.monthName(L.addMonths(curMonth, 1)))} a ${esc(L.monthName(last))} quedan con estos montos</small></span>
+          <button class="switch ${f.forward ? 'on' : ''}" data-act="bud-forward" aria-label="Aplicar hasta diciembre" aria-pressed="${f.forward}"></button></div>` : ''}
+        <button class="primary" data-act="bud-save">Guardar presupuesto</button>`;
+    }, (sheet) => {
+      sheet.querySelectorAll('input[data-bud]').forEach((el) => {
+        el.oninput = () => {
+          budForm.values[el.dataset.bud] = L.cleanDigits(el.value);
+          el.value = L.groupDigits(budForm.values[el.dataset.bud]);
+          sheet.querySelector('#bud-total').textContent = money(total());
+        };
+      });
+    });
+  }
+
+  function saveBudget() {
+    const f = budForm;
+    const last = L.addMonths(curMonth, 12 - Number(curMonth.slice(5, 7)));
+    const months = [];
+    for (let k = curMonth; k <= (f.forward ? last : curMonth); k = L.addMonths(k, 1)) months.push(k);
+    let rows = state.budgetRows || [];
+    for (const k of months) {
+      // El mes queda con las filas del formulario (las que tenían monto o ya existían, aunque ahora estén en 0).
+      rows = rows.filter((r) => !(r['Categoría'] === f.group && r['Mes'].slice(0, 7) === k));
+      let fresh = f.subs.filter((sub) => f.had[sub] || Number(f.values[sub]) > 0);
+      if (!fresh.length) fresh = [f.subs[0]]; // un 0 explícito: si no, el mes tomaría el presupuesto del año anterior
+      fresh.forEach((sub) => rows.push({ 'Mes': k + '-01', 'Categoría': f.group, 'Subcategoría': sub, 'Moneda': f.curs[sub], 'Importe': Number(f.values[sub]) || 0 }));
+    }
+    state.budgetRows = rows;
+    toast(`Presupuesto de ${f.name} guardado${months.length > 1 ? ` hasta ${L.monthName(months[months.length - 1])}` : ''}`, 'green');
+    budForm = null;
+    closeSheet();
+    save();
+  }
+
   // --- Detalle de movimiento ---
   function openMovement(id) {
     openSheet(() => {
@@ -1412,7 +1569,7 @@
       if (!m) return '<div class="empty">El movimiento ya no existe.</div>';
       return `<h3>${esc(movTitle(m))}</h3>
         <p class="lead">${m.type === 'inc' ? 'Ingreso' : m.type === 'save' ? (m.amount < 0 ? 'Retiro de ahorro' : 'Aporte a una meta')
-          : m.type === 'xfer' ? 'Transferencia entre cuentas · no es gasto ni ingreso' : 'Gasto'}</p>
+          : m.type === 'xfer' ? 'Transferencia entre cuentas · no es gasto ni ingreso' : isRefund(m) ? 'Devolución · resta del gasto de la categoría' : 'Gasto'}</p>
         <div class="card">
           ${m.type === 'xfer' ? `<div class="kv"><span>Desde</span><b>${esc(accName(m.from))}</b></div><div class="kv"><span>Hacia</span><b>${esc(accName(m.to))}</b></div>`
             : `<div class="kv"><span>${m.type === 'save' ? 'Meta' : 'Categoría'}</span><b>${esc([m.cat, m.sub].filter(Boolean).join(' · '))}</b></div>`}
@@ -1465,7 +1622,7 @@
     const key = L.monthKey(form.mode === 'bill' ? form.due : form.date);
     const s = L.categoryStats(state, key, today).find((x) => x.name === form.cat);
     if (!s || !s.limit) return null;
-    const add = L.convert(Number(form.digits), form.cur, 'COP', rates());
+    const add = (form.mode === 'exp' && form.withdraw ? -1 : 1) * L.convert(Number(form.digits), form.cur, 'COP', rates());
     const pct = ((s.spent + add) / s.limit) * 100;
     const tone = pct >= 100 ? 'red' : pct >= state.settings.threshold ? 'amber' : 'green';
     return { tone, text: `${form.cat}: ${pctTxt(s.pct)} → ${pctTxt(pct)} del presupuesto${form.mode === 'bill' ? ' al pagarla' : ''}` };
@@ -1536,6 +1693,8 @@
       <div class="amount-row"><span class="cur">${f.cur === 'COP' ? '$' : f.cur === 'ARS' ? 'AR$' : 'US$'}</span>
         <input id="f-amount" inputmode="numeric" autocomplete="off" placeholder="0" value="${L.groupDigits(f.digits)}" aria-label="Monto"></div>
       <div class="pills" style="margin-top:10px">${pills(L.CURRENCIES.map((c) => [c, c]), (v) => v === f.cur, 'form-cur')}</div>
+      ${f.mode === 'exp' ? `<div class="seg" style="margin-top:12px">${[[false, 'Compra'], [true, 'Devolución']].map(([v, l]) => `<button class="${f.withdraw === v ? 'on' : ''}" data-act="form-withdraw" data-v="${v ? 1 : ''}">${l}</button>`).join('')}</div>
+        ${f.withdraw ? '<p class="hint" style="margin-top:6px">Reintegro de una compra: resta del gasto de la categoría que elijas.</p>' : ''}` : ''}
       ${f.mode === 'save' ? `<div class="seg" style="margin-top:12px">${[[false, 'Aporte'], [true, 'Retiro']].map(([v, l]) => `<button class="${f.withdraw === v ? 'on' : ''}" data-act="form-withdraw" data-v="${v ? 1 : ''}">${l}</button>`).join('')}</div>
         <span class="field-label">Meta</span>
         <div class="pills scroll">${pills(goals.map((g) => [g.id, g.name]), (v) => v === f.goalId, 'form-goal')}</div>` : f.mode === 'xfer' ? xferBlock() : `<div id="f-cat">${catBlock()}</div>`}
@@ -1607,6 +1766,7 @@
           ? { date: f.date, type: 'xfer', from: f.from, to: f.to, cat: 'Transferencia', sub: xferLabel(f), note: f.note.trim(), amount, cur: f.cur, method: '', paidBy: f.paidBy || '' }
           : { date: f.date, type: f.mode, cat: f.cat, sub: f.mode === 'inc' ? '' : f.sub, note: f.note.trim(), amount, cur: f.cur,
           method: f.mode === 'exp' ? f.method : '', paidBy: f.paidBy || '' };
+      if (f.mode === 'exp' && f.withdraw) data.amount = -amount;
       const existing = f.editId && state.movements.find((m) => m.id === f.editId);
       if (existing) {
         Object.assign(existing, data);
@@ -1617,6 +1777,8 @@
         toast(`${f.withdraw ? 'Retiro' : 'Aporte'} guardado · ${goal.name} al ${pctTxt(p.pct)}`, 'green');
       } else if (f.mode === 'inc') {
         toast(`Ingreso guardado en ${f.cat}`, 'green');
+      } else if (f.mode === 'exp' && f.withdraw) {
+        toast(`Devolución guardada en ${f.cat}`, 'green');
       } else if (f.mode === 'xfer') {
         toast(`Transferencia guardada · ${xferLabel(f)}`, 'green');
       } else {
@@ -1727,7 +1889,8 @@
         <div class="card">
           <div class="kv"><span>Valor</span><b class="num">${fm(rr.amount)}</b></div>
           <div class="kv"><span>Cobrado</span><b class="num tone-green">${fm(inf.collected)}</b></div>
-          ${inf.writtenOff > 0.5 ? `<div class="kv"><span>No se cobra <small>retención o descuento</small></span><b class="num">${fm(inf.writtenOff)}</b></div>`
+          ${inf.writtenOff > 0.5 ? `${inf.withheld > 0.5 ? `<div class="kv"><span>Retención en la fuente <small>saldo a favor en la renta</small></span><b class="num">${fm(inf.withheld)}</b></div>` : ''}
+            ${inf.lost > 0.5 ? `<div class="kv"><span>No se cobra <small>descuento u otro</small></span><b class="num">${fm(inf.lost)}</b></div>` : ''}`
             : `<div class="kv"><span>Falta cobrar</span><b class="num ${inf.pending ? 'tone-red' : ''}">${fm(inf.pending)}</b></div>`}
         </div>
         ${inf.payments.length ? `<span class="field-label">Cobros</span>
@@ -1760,13 +1923,15 @@
     });
   }
 
-  // Si se cobra menos de lo que falta: queda pendiente o se da por cobrada (retención en la fuente, descuento).
+  // Si se cobra menos de lo que falta: queda pendiente, fue retención en la fuente (saldo a favor) o no se cobra.
   function restBlock(short, rest, cur) {
     if (!short) return '';
+    const hint = { ret: 'El cliente lo retuvo y lo pagó a la DIAN a nombre de quien facturó: es un anticipo del impuesto de renta, se descuenta en la declaración. La factura queda cobrada.',
+      close: 'Un descuento o algo que no se va a cobrar: cuenta como gasto del mes. La factura queda cobrada.' }[collectForm.rest];
     return `<span class="field-label">Faltan ${esc(L.formatMoney(rest, cur))}. ¿Qué pasa con eso?</span>
-      <div class="seg wide">${[['open', 'Queda pendiente'], ['close', 'No se cobra']].map(([v, l]) =>
+      <div class="seg wide">${[['open', 'Pendiente'], ['ret', 'Retención'], ['close', 'No se cobra']].map(([v, l]) =>
         `<button class="${collectForm.rest === v ? 'on' : ''}" data-act="recv-rest" data-v="${v}">${l}</button>`).join('')}</div>
-      ${collectForm.rest === 'close' ? '<p class="hint" style="margin-top:6px">Por ejemplo, la retención en la fuente o un descuento. La factura queda cobrada.</p>' : ''}`;
+      ${hint ? `<p class="hint" style="margin-top:6px">${hint}</p>` : ''}`;
   }
 
   function saveCollect() {
@@ -1781,10 +1946,12 @@
     state.movements.push(mov);
     if (!r.incomeId) r.incomeId = mov.id;
     const left = before.pending - amount;
-    if (left < 0.5 || f.rest === 'close') { r.collected = true; r.collectedAt = f.date; }
+    if (left < 0.5 || f.rest !== 'open') { r.collected = true; r.collectedAt = f.date; }
+    if (left > 0.5 && f.rest === 'ret') r.withheld = Math.round(left * 100) / 100;
+    else delete r.withheld;
     collectForm = null;
     closeSheet();
-    toast(r.collected ? `Cobrada: ${r.client}${left > 0.5 ? ` · sin cobrar ${L.formatMoney(left, r.cur)}` : ''}`
+    toast(r.collected ? `Cobrada: ${r.client}${left > 0.5 ? ` · ${r.withheld ? 'retención' : 'sin cobrar'} ${L.formatMoney(left, r.cur)}` : ''}`
       : `Cobro parcial: falta ${L.formatMoney(left, r.cur)}`, 'green');
     save();
   }
@@ -1798,6 +1965,7 @@
       if (r.id !== m.receivableId && r.incomeId !== movId) continue;
       r.collected = false;
       r.collectedAt = null;
+      delete r.withheld;
       if (r.incomeId === movId) r.incomeId = null;
     }
     save();
@@ -2076,8 +2244,9 @@
           <button class="secondary" data-act="rates-update">Actualizar en línea</button>
         </div>
 
-        <span class="field-label">Categorías</span>
-        <button class="dashed" style="margin:0" data-act="new-cat">+ Nueva categoría</button>
+        <span class="field-label">Categorías y facturas mensuales</span>
+        <button class="secondary" style="margin-top:0" data-act="rec-list">Facturas mensuales</button>
+        <button class="dashed" style="margin:8px 0 0" data-act="new-cat">+ Nueva categoría</button>
 
         <span class="field-label">Importar y exportar</span>
         <div class="card">
@@ -2293,6 +2462,7 @@
       if (!r) return;
       r.collected = false;
       r.collectedAt = null;
+      delete r.withheld;
       save();
       renderSheet();
     },
@@ -2359,11 +2529,21 @@
     'form-mode': (d) => {
       const prev = form.mode;
       form.mode = d.v;
+      form.withdraw = false;
       if ((prev === 'inc') !== (d.v === 'inc')) { form.cat = d.v === 'inc' ? state.incomeCats[0] : state.categories[0].name; form.sub = ''; }
       renderSheet();
     },
     'form-cur': (d) => { form.cur = d.v; renderSheet(); },
     'form-goal': (d) => { form.goalId = d.v; renderSheet(); },
+    'budget-edit': (d) => openBudgetEdit(d.id),
+    'bill-edit': (d) => openBillEdit(d.id, null),
+    'rec-edit': (d) => openBillEdit(null, d.id),
+    'rec-list': () => openRecurringList(),
+    'bf-cur': (d) => { billForm.cur = d.v; renderSheet(); },
+    'bf-forward': () => { billForm.forward = !billForm.forward; renderSheet(); },
+    'bf-save': () => saveBillEdit(),
+    'bud-forward': () => { budForm.forward = !budForm.forward; renderSheet(); },
+    'bud-save': () => saveBudget(),
     'form-from': (d) => { form.from = d.v; renderSheet(); },
     'form-to': (d) => { form.to = d.v; renderSheet(); },
     'bal-month': (d) => { ui.balMonth = L.addMonths(balKey(), Number(d.v)); renderScreen(); },
@@ -2587,6 +2767,8 @@
     return true;
   }
   window.addEventListener('hashchange', handleConnectLink);
+  // Datos guardados por una versión anterior (presupuesto sin subcategorías): se vuelven a leer de la planilla.
+  if (isSynced() && (state.budgetRows || []).some((r) => !('Subcategoría' in r))) sync.version = null;
   if (!handleConnectLink() && isSynced()) poll();
   setInterval(poll, POLL_MS);
   document.addEventListener('visibilitychange', poll);

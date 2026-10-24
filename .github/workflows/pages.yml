@@ -5,6 +5,8 @@ on:
   push:
     branches: [main]
     paths: ['hogar/**', '.github/workflows/pages.yml']
+  pull_request:
+    paths: ['hogar/**', '.github/workflows/pages.yml']
   workflow_dispatch:
 
 permissions:
@@ -13,7 +15,7 @@ permissions:
   id-token: write
 
 concurrency:
-  group: pages
+  group: pages-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -26,8 +28,27 @@ jobs:
           node-version: 22
       - run: node --test hogar/tests/*.test.js
 
+  # Recorre todas las pantallas en un navegador (celular y computadora) con una planilla simulada.
+  recorrido:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install --no-save --no-package-lock playwright@1.56.1
+      - run: npx playwright install --with-deps chromium
+      - run: node hogar/tests/e2e/recorrido.js recorrido
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: capturas-del-recorrido
+          path: recorrido
+          retention-days: 14
+
   deploy:
-    needs: test
+    if: github.event_name != 'pull_request'
+    needs: [test, recorrido]
     runs-on: ubuntu-latest
     environment:
       name: github-pages

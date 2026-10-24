@@ -32,12 +32,14 @@ var TABLES = {
   'Por cobrar': {
     key: ['ID'], dates: ['Fecha de emisión', 'Vence', 'Fecha de cobro'],
     text: ['ID', 'NIT', 'Cliente', 'Moneda', 'Estado', 'Movimiento ID'],
+    addable: ['Retención'], // parte no cobrada que fue retención en la fuente (saldo a favor en la renta)
   },
   'Categorías': { key: ['Categoría', 'Subcategoría'], dates: [], text: ['Categoría', 'Subcategoría', 'Tipo'] },
   'Ajustes': { key: ['Ajuste'], dates: [], text: ['Ajuste', 'Fuente o nota'],
     allowedKeys: ['Tasa USD (COP por 1 USD)', 'Tasa ARS (COP por 1 ARS)', 'Umbral de aviso de presupuesto'] },
   'Deudas': { readOnly: true, dates: ['Próximo vencimiento'] },
-  'Presupuesto': { readOnly: true, dates: ['Mes'] },
+  // Una fila por mes, categoría y subcategoría. La app edita el límite de una categoría (del mes en adelante).
+  'Presupuesto': { key: ['Mes', 'Categoría', 'Subcategoría'], dates: ['Mes'], text: ['Categoría', 'Subcategoría', 'Moneda'] },
   'Listas': { readOnly: true, dates: [] },
   'Reglas': { readOnly: true, dates: [], optional: true },
   'Metas': {
@@ -73,7 +75,7 @@ var CUOTAS_MESES_ATRAS = 25;
 var CUOTAS_MESES_ADELANTE = 13;
 var REGLAS_HEADERS = ['Contiene', 'Categoría', 'Subcategoría', 'Tipo', 'Activa'];
 // Sube con cada cambio de este archivo que la app necesita; la app avisa si la planilla tiene uno más viejo.
-var CODIGO_VERSION = 14;
+var CODIGO_VERSION = 15;
 var CARPETA_RESPALDO = 'Backup';
 var PREFIJO_RESPALDO = 'Cuentas Casa - respaldo ';
 var RESPALDOS_A_GUARDAR = 12;
@@ -546,6 +548,7 @@ function instalar() {
   corregirTasaArs();
   ensureHeaders('Movimientos', ['Pagó', 'Meta ID', 'Por cobrar ID', 'Origen ID', 'Destino ID']);
   ensureHeaders('Recurrentes', ['Desde']);
+  ensureHeaders('Por cobrar', ['Retención']);
   crearReglas();
   crearPestana('Metas', TABLES['Metas'].headers);
   crearPestana('Cuentas y bienes', TABLES['Cuentas y bienes'].headers);
@@ -740,9 +743,13 @@ function datosMes(key) {
     var v = aCop(b, 'Importe', rates);
     if (b['Pagada'] === 'Sí') { d.gastos += v; cat(b['Categoría']).gastado += v; } else d.pendientes.push(b);
   });
-  var refKey = presu.some(function (r) { return enMes(r['Mes']); }) ? key : addMonthsKey(key, -12);
+  // Por categoría: el presupuesto del mes o, si esa categoría no tiene, el del mismo mes del año anterior.
+  var conMes = {};
+  presu.forEach(function (r) { if (enMes(r['Mes'])) conMes[r['Categoría']] = true; });
+  var antes = addMonthsKey(key, -12);
   presu.forEach(function (r) {
-    if (String(r['Mes'] || '').slice(0, 7) !== refKey || r['Categoría'] === 'Ingresos') return;
+    var k = String(r['Mes'] || '').slice(0, 7);
+    if (r['Categoría'] === 'Ingresos' || k !== (conMes[r['Categoría']] ? key : antes)) return;
     cat(r['Categoría']).limite += aCop(r, 'Importe', rates);
   });
   d.pendientes.sort(function (a, b) { return String(a['Vence']).localeCompare(String(b['Vence'])); });
