@@ -1,7 +1,7 @@
 // Guarda la app en el teléfono para que abra sin conexión.
 // Primero intenta la red (así cada cambio publicado llega enseguida) y, si no hay o tarda, usa la copia guardada.
 // Solo toca los archivos de la app: la planilla, las tasas y el lector de tickets siguen yendo siempre a internet.
-const CACHE = 'cuentas-casa-v15';
+const CACHE = 'cuentas-casa-v16';
 const SHELL = ['./', 'index.html', 'styles.css', 'lib.js', 'charts.js', 'app.js', 'manifest.webmanifest', 'icon.svg'];
 const ESPERA_MS = 3500;
 
