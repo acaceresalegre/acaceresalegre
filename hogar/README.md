@@ -46,6 +46,8 @@ Conectada a la planilla «Cuentas Casa - base de datos», la app lee y escribe a
 (los cambios del otro llegan en unos 20 segundos). Los vencimientos se agregan solos a un calendario de Google
 «Cuentas Casa». La instalación, paso a paso, está en [`apps-script/INSTALAR.md`](apps-script/INSTALAR.md).
 
+- También se puede cargar directo en la planilla: el cambio llega a la app en unos 20 segundos. Si una fila
+  queda con el **ID** vacío, la planilla le pone uno sola; en Movimientos la **Fecha** es obligatoria.
 - La planilla es la fuente de verdad. Cada cambio se envía como alta, cambio o baja de una fila (identificada por su ID);
   si no hay conexión queda pendiente y se envía al volver.
 - Las facturas de cada mes (recurrentes y cuotas de préstamos) las crea el programa de la planilla, una vez por hora.

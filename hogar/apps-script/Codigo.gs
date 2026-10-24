@@ -75,7 +75,7 @@ var CUOTAS_MESES_ATRAS = 25;
 var CUOTAS_MESES_ADELANTE = 13;
 var REGLAS_HEADERS = ['Contiene', 'Categoría', 'Subcategoría', 'Tipo', 'Activa'];
 // Sube con cada cambio de este archivo que la app necesita; la app avisa si la planilla tiene uno más viejo.
-var CODIGO_VERSION = 15;
+var CODIGO_VERSION = 16;
 var CARPETA_RESPALDO = 'Backup';
 var PREFIJO_RESPALDO = 'Cuentas Casa - respaldo ';
 var RESPALDOS_A_GUARDAR = 12;
@@ -170,7 +170,36 @@ function onEdit() {
 
 // Activador instalable: filas borradas o insertadas a mano también avisan a la app.
 function alCambiar() {
+  var lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    completarIds();
+  } finally {
+    lock.releaseLock();
+  }
   bumpVersion();
+}
+
+// Filas cargadas a mano en la planilla sin ID: se les pone uno para que la app las vea.
+var PREFIJO_ID = { 'Movimientos': 'M', 'Facturas': 'F', 'Recurrentes': 'R', 'Por cobrar': 'C', 'Metas': 'G', 'Cuentas y bienes': 'A', 'Ingresos esperados': 'I' };
+
+function completarIds() {
+  var n = 0;
+  Object.keys(PREFIJO_ID).forEach(function (name) {
+    if (!ss().getSheetByName(name)) return;
+    var t = readTable(name);
+    var col = t.headers.indexOf('ID');
+    if (col < 0) return;
+    t.rows.forEach(function (row, i) {
+      if (row['ID'] !== undefined && String(row['ID']).trim() !== '') return;
+      // Solo si la fila tiene algo más que «Actualizado» (una fila vacía no cuenta).
+      var datos = Object.keys(row).filter(function (h) { return h !== 'Actualizado'; });
+      if (!datos.length) return;
+      t.sheet.getRange(t.rowNumbers[i], col + 1).setValue(newId(PREFIJO_ID[name]));
+      n++;
+    });
+  });
+  return n;
 }
 
 // ---------- Lectura y escritura de pestañas ----------
@@ -506,10 +535,11 @@ function tareaPeriodica() {
   var lock = LockService.getScriptLock();
   lock.waitLock(30000);
   try {
+    var ids = completarIds();
     var generated = generarFacturas();
     syncEventsFor(null);
     limpiarEventos();
-    if (generated.length) bumpVersion();
+    if (generated.length || ids) bumpVersion();
   } finally {
     lock.releaseLock();
   }

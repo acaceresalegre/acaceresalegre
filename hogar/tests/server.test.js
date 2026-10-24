@@ -406,3 +406,22 @@ test('presupuesto: la app edita una categoría del mes y las demás siguen toman
   assert.equal(d.cats['Alimentación'].limite, 950000);
   assert.equal(d.cats['Ocio'].limite, 300000, 'Ocio no tiene presupuesto en octubre 2026: usa el de 2025');
 });
+
+test('filas cargadas a mano sin ID: la planilla les pone uno y la app las ve', () => {
+  const p = planilla();
+  p['Movimientos'].push(['', D('2026-10-20'), 'Gasto', 'Alimentación', 'Supermercado', 'COP', 50000, 'Efectivo', '', 'a mano', '', '']);
+  p['Movimientos'].push(['', '', '', '', '', '', '', '', '', '', '', D('2026-10-20')]);
+  const gas = createGas(p, { now: NOW });
+  const antes = gas.get({ token: 'secreto', action: 'version' }).version;
+  gas.run('alCambiar');
+  const filas = rowsOf(gas, 'Movimientos');
+  const mano = filas.find((r) => r[9] === 'a mano');
+  assert.match(mano[0], /^M[0-9a-f]{10}$/);
+  assert.equal(filas[filas.length - 1][0], '', 'una fila con solo «Actualizado» no recibe ID');
+  const ids = filas.map((r) => r[0]).filter(Boolean);
+  assert.equal(new Set(ids).size, ids.length);
+  assert.notEqual(gas.get({ token: 'secreto', action: 'version' }).version, antes);
+  assert.ok(gas.post({ token: 'secreto', action: 'pull' }).tables['Movimientos'].some((m) => m['ID'] === mano[0]));
+  gas.run('alCambiar');
+  assert.equal(rowsOf(gas, 'Movimientos').find((r) => r[9] === 'a mano')[0], mano[0], 'el ID no cambia después');
+});

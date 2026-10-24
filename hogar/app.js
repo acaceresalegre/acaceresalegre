@@ -12,9 +12,10 @@
   const TESSERACT_SRC = 'https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js';
   const NOVEDADES_KEY = 'cuentas-casa-novedades';
   // Versión mínima de Codigo.gs que esta app necesita (CODIGO_VERSION en la planilla).
-  const CODIGO_REQUERIDO = 15;
+  const CODIGO_REQUERIDO = 16;
   // La primera es la versión actual de la app; se muestra una vez después de cada actualización.
   const NOVEDADES = [
+    { v: 16, items: ['Los movimientos cargados a mano en la planilla aparecen en la app aunque dejes el ID vacío: la planilla lo completa sola.'] },
     { v: 15, items: [
       'Presupuesto editable desde la app: en Presupuesto tocá una categoría → Editar. Se puede aplicar hasta diciembre.',
       'Facturas mensuales editables: monto, día y categoría (Ajustes → Facturas mensuales, o desde la factura → Editar).',
