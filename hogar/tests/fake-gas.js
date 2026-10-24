@@ -97,6 +97,20 @@ function createGas(tables, opts = {}) {
   const mails = [];
   const fetches = [];
   const triggers = [];
+  const drive = { folders: [], files: [] };
+  const iter = (arr) => { let i = 0; return { hasNext: () => i < arr.length, next: () => arr[i++] }; };
+  const fakeFile = (name, folder) => {
+    const f = { name, folder, trashed: false, getName: () => f.name, setTrashed: (t) => { f.trashed = t; },
+      makeCopy: (n, dest) => { const c = fakeFile(n, dest); drive.files.push(c); return c; } };
+    return f;
+  };
+  const fakeFolder = (name) => {
+    const d = { name, getName: () => name, getUrl: () => 'https://drive.google.com/drive/folders/' + name,
+      getFiles: () => iter(drive.files.filter((f) => f.folder === d && !f.trashed)),
+      getFilesByName: (n) => iter(drive.files.filter((f) => f.folder === d && !f.trashed && f.name === n)) };
+    return d;
+  };
+  const planilla = fakeFile('Cuentas Casa', null);
   const now = opts.now || (() => new Date());
 
   const Utilities = {
@@ -125,6 +139,7 @@ function createGas(tables, opts = {}) {
         getSheetByName: (n) => sheets[n] || null,
         getSpreadsheetTimeZone: () => 'America/Bogota',
         getUrl: () => 'https://docs.google.com/spreadsheets/d/PRUEBA/edit',
+        getId: () => 'PRUEBA',
         insertSheet: (n) => (sheets[n] = new FakeSheet(n, [])),
       }),
       getUi: () => ({
@@ -159,7 +174,16 @@ function createGas(tables, opts = {}) {
       getProjectTriggers: () => triggers.map((fn) => ({ getHandlerFunction: () => fn })),
       deleteTrigger: (tr) => { triggers.splice(triggers.indexOf(tr.getHandlerFunction()), 1); },
       newTrigger: (fn) => ({ timeBased() { return this; }, everyHours() { return this; }, everyDays() { return this; }, atHour() { return this; },
+        everyWeeks() { return this; }, onWeekDay() { return this; },
         forSpreadsheet() { return this; }, onChange() { return this; }, create() { triggers.push(fn); } }),
+      WeekDay: { SUNDAY: 'SUNDAY' },
+    },
+    DriveApp: {
+      getRootFolder: () => ({}),
+      getFoldersByName: (n) => iter(drive.folders.filter((d) => d.name === n)),
+      createFolder: (n) => { const d = fakeFolder(n); drive.folders.push(d); return d; },
+      getFileById: (id) => { if (id !== 'PRUEBA') throw new Error('archivo inexistente'); return planilla; },
+      fakeFolder, fakeFile,
     },
     UrlFetchApp: {
       fetch: (url, o = {}) => {
@@ -178,7 +202,7 @@ function createGas(tables, opts = {}) {
   vm.runInContext(code, sandbox);
 
   return {
-    sheets, props, calendars, sandbox, ui, mails, triggers, fetches,
+    sheets, props, calendars, sandbox, ui, mails, triggers, fetches, drive,
     get(params) { return JSON.parse(sandbox.doGet({ parameter: params }).text); },
     post(body) { return JSON.parse(sandbox.doPost({ postData: { contents: JSON.stringify(body) } }).text); },
     run(fn) { return sandbox[fn](); },

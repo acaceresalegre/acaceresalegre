@@ -205,7 +205,7 @@
     const rates = state.settings.rates;
     const map = new Map();
     for (const m of state.movements) {
-      if (monthKey(m.date) !== key || m.type === 'save') continue;
+      if (monthKey(m.date) !== key || (m.type !== 'inc' && m.type !== 'exp')) continue;
       const name = personOf(m) || 'Sin asignar';
       const r = map.get(name) || { name, income: 0, expense: 0 };
       r[m.type === 'inc' ? 'income' : 'expense'] += toCOP(m, rates);
@@ -349,8 +349,11 @@
 
   // ---------- Balance del hogar ----------
   // Tipos de cuentas y bienes, y en qué rubro del balance van.
-  const ACCOUNT_KINDS = ['Cuenta bancaria', 'Efectivo', 'Billetera virtual', 'Inversión', 'Inmueble', 'Vehículo', 'Otro bien'];
-  const kindClass = (kind) => (['Cuenta bancaria', 'Efectivo', 'Billetera virtual'].includes(kind) ? 'cash' : kind === 'Inversión' ? 'invest' : 'asset');
+  const CARD_KIND = 'Tarjeta de crédito';
+  const ACCOUNT_KINDS = ['Cuenta bancaria', 'Efectivo', 'Billetera virtual', CARD_KIND, 'Inversión', 'Inmueble', 'Vehículo', 'Otro bien'];
+  // La tarjeta de crédito es un pasivo: su saldo es lo que se debe. Comprar con ella es gasto; pagar el resumen, una transferencia.
+  const kindClass = (kind) => (['Cuenta bancaria', 'Efectivo', 'Billetera virtual'].includes(kind) ? 'cash'
+    : kind === CARD_KIND ? 'card' : kind === 'Inversión' ? 'invest' : 'asset');
   const endOf = (key) => dateInMonth(key, 31);
 
   // Último saldo cargado de una cuenta hasta el mes key (puede ser de un mes anterior).
@@ -454,7 +457,7 @@
   function balanceSheet(state, key, today) {
     const rates = state.settings.rates;
     const end = endOf(key);
-    const groups = { cash: [], invest: [], asset: [] };
+    const groups = { cash: [], invest: [], asset: [], card: [] };
     const missing = [];
     for (const a of state.accounts || []) {
       const b = accountBalance(state, a.id, key);
@@ -480,23 +483,27 @@
     const sum = (xs) => xs.reduce((s, x) => s + x.amount, 0);
     const assets = { cash: sum(groups.cash), invest: sum(groups.invest), receivables: sum(receivables), asset: sum(groups.asset) };
     const totalAssets = assets.cash + assets.invest + assets.receivables + assets.asset;
-    const totalLiabilities = sum(loans) + sum(payables);
-    return { key, groups, receivables, loans, payables, assets, totalAssets, totalLoans: sum(loans), totalPayables: sum(payables),
+    const totalCards = sum(groups.card);
+    const totalLiabilities = sum(loans) + totalCards + sum(payables);
+    return { key, groups, receivables, loans, payables, assets, totalAssets, totalLoans: sum(loans), totalCards, totalPayables: sum(payables),
       totalLiabilities, netWorth: totalAssets - totalLiabilities, missing, noData };
   }
 
   // Flujo de efectivo simple: cuánto cambiaron las cuentas líquidas contra lo registrado en el mes.
   // La diferencia son gastos o ingresos sin cargar (o cuentas que no están en la lista).
+  // Las tarjetas de crédito restan: una compra con tarjeta es gasto aunque la plata salga al pagar el resumen,
+  // y pagar el resumen (una transferencia de la cuenta a la tarjeta) no cambia el total.
   function cashFlow(state, key) {
     const rates = state.settings.rates;
     const prev = addMonths(key, -1);
-    const cash = (state.accounts || []).filter((a) => kindClass(a.kind) === 'cash');
+    const cash = (state.accounts || []).filter((a) => kindClass(a.kind) === 'cash' || kindClass(a.kind) === 'card');
     const at = (k) => {
       let total = 0;
       let complete = cash.length > 0;
       for (const a of cash) {
         const b = (state.balances || []).find((x) => x.accountId === a.id && x.month === k);
-        if (b) total += convert(b.amount, a.cur, 'COP', rates); else complete = false;
+        const sign = kindClass(a.kind) === 'card' ? -1 : 1;
+        if (b) total += sign * convert(b.amount, a.cur, 'COP', rates); else complete = false;
       }
       return { total, complete };
     };
@@ -608,7 +615,7 @@
     for (let i = n - 1; i >= 0; i--) {
       const key = addMonths(endKey, -i);
       const b = balanceSheet(state, key, today);
-      const hasData = b.groups.cash.length + b.groups.invest.length + b.groups.asset.length > 0;
+      const hasData = b.groups.cash.length + b.groups.invest.length + b.groups.asset.length + b.groups.card.length > 0;
       out.push({ key, assets: b.totalAssets, liabilities: b.totalLiabilities, net: b.netWorth, hasData });
     }
     return out;
@@ -745,7 +752,7 @@
       ...events, 'END:VCALENDAR'].join('\r\n') + '\r\n';
   }
 
-  const TYPE_LABEL = { exp: 'Gasto', inc: 'Ingreso', save: 'Ahorro' };
+  const TYPE_LABEL = { exp: 'Gasto', inc: 'Ingreso', save: 'Ahorro', xfer: 'Transferencia' };
 
   function toCSV(state) {
     // Un texto que empieza con = + - @ se abriría como fórmula en Excel: se le antepone un apóstrofo.
@@ -1088,6 +1095,9 @@
 
   const INCOME_GROUP = 'Ingresos';
   const SAVE_TYPE = 'Ahorro'; // aportes a metas: Tipo y Categoría «Ahorro», Subcategoría = nombre de la meta
+  // Transferencias entre cuentas propias (y pago del resumen de la tarjeta): Tipo y Categoría «Transferencia»,
+  // Subcategoría «Origen → Destino», cuentas en Origen ID y Destino ID. No son ingreso ni gasto.
+  const XFER_TYPE = 'Transferencia';
   const SETTING_KEYS = { USD: 'Tasa USD (COP por 1 USD)', ARS: 'Tasa ARS (COP por 1 ARS)', threshold: 'Umbral de aviso de presupuesto' };
 
   function parseAlerts(v) {
@@ -1171,6 +1181,11 @@
       due: str(r['Fecha objetivo']), initial: num(r['Ahorro inicial']), note: str(r['Comentarios']),
     }));
     s.movements = t('Movimientos').filter((r) => r['ID'] && r['Fecha']).map((r) => {
+      if (str(r['Tipo']) === XFER_TYPE) {
+        return { id: str(r['ID']), date: str(r['Fecha']), type: 'xfer', from: str(r['Origen ID']), to: str(r['Destino ID']), cat: XFER_TYPE,
+          sub: str(r['Subcategoría']), note: str(r['Comentarios']), amount: num(r['Importe']), cur: str(r['Moneda']) || 'COP', method: '',
+          by: str(r['Cargado por']), paidBy: str(r['Pagó']) };
+      }
       if (str(r['Tipo']) === SAVE_TYPE) {
         return { id: str(r['ID']), date: str(r['Fecha']), type: 'save', goalId: str(r['Meta ID']), cat: str(r['Subcategoría']), sub: '',
           note: str(r['Comentarios']), amount: num(r['Importe']), cur: str(r['Moneda']) || 'COP', method: str(r['Medio de pago']),
@@ -1224,6 +1239,7 @@
   function stateToRows(s) {
     const code = (labelName) => (s.catCodes && s.catCodes[labelName]) || labelName;
     const goalName = (id) => ((s.goals || []).find((g) => g.id === id) || {}).name;
+    const accName = (id) => ((s.accounts || []).find((a) => a.id === id) || {}).name || (id ? '?' : 'Otra');
     const alerts = (a) => (a && a.length ? a : [3, 0]).join(',');
     return {
       'Movimientos': s.movements.map((m) => {
@@ -1235,6 +1251,10 @@
           'Pagó': m.paidBy || '',
         };
         if (m.type === 'save') row['Meta ID'] = m.goalId || '';
+        if (m.type === 'xfer') {
+          Object.assign(row, { 'Categoría': XFER_TYPE, 'Subcategoría': `${accName(m.from)} → ${accName(m.to)}`, 'Medio de pago': '',
+            'Origen ID': m.from || '', 'Destino ID': m.to || '' });
+        }
         if (m.receivableId) row['Por cobrar ID'] = m.receivableId;
         return row;
       }),

@@ -449,6 +449,7 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 14px; }
 :root { --save: #1f8a8a; }
 .fill.save { background: var(--save); }
 .mov .amt.save, .tbl .save { color: var(--save); font-weight: 700; }
+.mov .amt.xfer, .tbl .xfer { color: var(--ink-2); }
 .goal-card { display: flex; flex-direction: column; gap: 12px; }
 .goal-open { display: block; width: 100%; text-align: left; background: none; border: 0; padding: 0; font: inherit; color: inherit; cursor: pointer; }
 .goal-amt { margin: 2px 0 10px; font-size: 13px; color: var(--ink-2); }
@@ -516,3 +517,6 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 14px; }
 .bill.recv > .pill { flex-shrink: 0; }
 .steps { margin: 0 0 4px; padding: 14px 16px 14px 36px; font-size: 15px; line-height: 1.5; }
 .steps li { padding: 4px 0; }
+
+.novedades { margin: 0; padding-left: 18px; display: grid; gap: 8px; font-size: 14px; line-height: 1.4; }
+.novedades-aviso { display: block; width: 100%; text-align: left; border: 0; font: inherit; cursor: pointer; margin: 0 0 14px; }

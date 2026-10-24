@@ -10,6 +10,21 @@
   const POLL_MS = 20000;
   const XLSX_SRC = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
   const TESSERACT_SRC = 'https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js';
+  const NOVEDADES_KEY = 'cuentas-casa-novedades';
+  // Versión mínima de Codigo.gs que esta app necesita (CODIGO_VERSION en la planilla).
+  const CODIGO_REQUERIDO = 14;
+  // La primera es la versión actual de la app; se muestra una vez después de cada actualización.
+  const NOVEDADES = [
+    { v: 14, items: [
+      'Respaldo semanal: los domingos se guarda una copia de la planilla en la carpeta «Backup» de tu Drive (quedan las últimas 12).',
+      'La app abre sin conexión. Lo que cargues se guarda en el teléfono y se envía cuando vuelve internet.',
+      'Transferencias entre cuentas: no cuentan como gasto ni como ingreso. El pago del resumen de la tarjeta de crédito también es una transferencia.',
+      'Si el código de la planilla quedó viejo, la app te avisa qué hacer.',
+    ] },
+    { v: 13, items: ['En iPhone el enlace de conexión queda guardado en la app instalada.'] },
+    { v: 12, items: ['Cobros parciales de las facturas emitidas.'] },
+  ];
+  const APP_VERSION = NOVEDADES[0].v;
 
   const $ = (sel) => document.querySelector(sel);
   const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({
@@ -89,7 +104,12 @@
   // Todo viaja por POST con el código en el cuerpo (no en la dirección, que queda en registros e historial).
   // text/plain evita la consulta previa de CORS que Apps Script no responde.
   async function call(method, params, body) {
-    const res = await fetch(sync.url, { method: 'POST', body: JSON.stringify({ ...params, ...body, token: sync.token }) });
+    let res;
+    try {
+      res = await fetch(sync.url, { method: 'POST', body: JSON.stringify({ ...params, ...body, token: sync.token }) });
+    } catch (e) {
+      throw new Error(navigator.onLine === false ? 'Sin conexión. Los cambios quedan guardados y se envían al volver internet.' : 'No se pudo conectar con la planilla');
+    }
     const data = await res.json();
     if (!data.ok) throw new Error(data.error || 'Error de la planilla');
     return data;
@@ -98,6 +118,8 @@
   function applyPull(data) {
     state = L.sheetToState(data.tables, state, today);
     sync.version = data.version;
+    sync.codigo = Number(data.codigo) || 0;
+    sync.respaldo = data.respaldo || '';
     sync.snapshot = L.stateToRows(state);
     sync.lastSync = new Date().toISOString();
     sync.error = null;
@@ -258,13 +280,16 @@
     </div>`;
   }
 
-  const movTitle = (m) => m.note || (m.type === 'save' ? `${m.amount < 0 ? 'Retiro de' : 'Aporte a'} ${m.cat}` : m.sub || m.cat);
-  const amtCls = (m) => (m.type === 'inc' ? 'inc' : m.type === 'save' ? 'save' : '');
-  const amtSign = (m) => (m.type === 'inc' ? '+' : m.type === 'save' && m.amount > 0 ? '→ ' : '');
+  const accName = (id) => ((state.accounts || []).find((a) => a.id === id) || {}).name || (id ? 'Cuenta borrada' : 'Otra');
+  const xferLabel = (m) => `${accName(m.from)} → ${accName(m.to)}`;
+  const movTitle = (m) => m.note || (m.type === 'save' ? `${m.amount < 0 ? 'Retiro de' : 'Aporte a'} ${m.cat}` : m.type === 'xfer' ? xferLabel(m) : m.sub || m.cat);
+  const amtCls = (m) => (m.type === 'inc' ? 'inc' : m.type === 'save' ? 'save' : m.type === 'xfer' ? 'xfer' : '');
+  const amtSign = (m) => (m.type === 'inc' ? '+' : (m.type === 'save' && m.amount > 0) || m.type === 'xfer' ? '→ ' : '');
 
   function movRow(m) {
     const when = L.monthKey(m.date) === curMonth ? `día ${L.dayOf(m.date)}` : dateTxt(m.date);
-    const sub = [m.type === 'save' ? 'Ahorro' : '', m.cat, m.sub, when, L.personOf(m)].filter(Boolean).join(' · ');
+    const sub = (m.type === 'xfer' ? ['Transferencia', m.note ? xferLabel(m) : '', when, L.personOf(m)]
+      : [m.type === 'save' ? 'Ahorro' : '', m.cat, m.sub, when, L.personOf(m)]).filter(Boolean).join(' · ');
     return `<button class="mov" data-act="mov" data-id="${esc(m.id)}">
       <span class="grow"><b>${esc(movTitle(m))}</b><small>${esc(sub)}</small></span>
       <span class="amt ${amtCls(m)}">${amtSign(m)}${esc(shown(m))}</span>
@@ -295,7 +320,9 @@
     const spent = stats.reduce((s, c) => s + c.spent, 0);
     const movs = [...state.movements].sort((a, b) => b.date.localeCompare(a.date)).slice(0, 5);
 
-    return header(L.longDate(today), 'Cuentas Casa') + `
+    return header(L.longDate(today), 'Cuentas Casa') +
+      (codigoViejo() ? `<div class="notice amber">${codigoAviso}</div>` : '') +
+      (novedadesVistas() < APP_VERSION ? `<button class="notice green novedades-aviso" data-act="novedades"><b>Novedades de la app</b> · Tocá para ver qué hay de nuevo</button>` : '') + `
       <section class="dark">
         <div class="lbl">Saldo de ${esc(L.monthName(curMonth))}</div>
         <div class="big num">${esc(money(sum.balance))}</div>
@@ -860,7 +887,7 @@
       <div class="st-note">Mes anterior: ${esc(money(prev.result))}.
         ${r.unpaid ? `Incluye ${esc(money(r.unpaid))} de facturas del mes todavía sin pagar. ` : ''}
         ${r.principal ? `La amortización de préstamos del mes (${esc(money(r.principal))}) baja la deuda: no es gasto.` : ''}
-        Los aportes a metas tampoco son gasto.</div>
+        Los aportes a metas y las transferencias entre cuentas tampoco son gasto.</div>
     </div>`;
   }
 
@@ -881,6 +908,7 @@
       ${line('Total activos', b.totalAssets, 'sub')}
       <div class="st-head">Pasivos</div>
       ${b.loans.map((x) => line(esc(x.name), neg(x.amount), 'ind')).join('')}
+      ${b.groups.card.length ? `<div class="st-sub">Tarjetas de crédito</div>${b.groups.card.map((x) => acc({ ...x, amount: neg(x.amount) })).join('')}` : ''}
       ${b.noData.length ? `<div class="st-row ind muted"><span>Sin datos de saldo: ${esc(b.noData.join(', '))}</span><b>—</b></div>` : ''}
       ${b.payables.length ? line(`Facturas impagas <small>${b.payables.length}</small>`, neg(b.totalPayables), 'ind') : ''}
       ${line('Total pasivos', neg(b.totalLiabilities), 'sub')}
@@ -996,7 +1024,7 @@
         <p class="lead">Lo que había en cada cuenta el último día del mes (o el valor estimado de cada bien). Dejá vacío lo que no sepas.</p>
         ${(state.accounts || []).map((a) => {
           const last = L.accountBalance(state, a.id, L.addMonths(f.key, -1));
-          return `<span class="field-label">${esc(a.name)} <small class="hint">· ${esc(a.kind)}${last ? ` · antes ${esc(L.formatMoney(last.amount, a.cur))}` : ''}</small></span>
+          return `<span class="field-label">${esc(a.name)} <small class="hint">· ${esc(a.kind)}${L.kindClass(a.kind) === 'card' ? ' (lo que se debe)' : ''}${last ? ` · antes ${esc(L.formatMoney(last.amount, a.cur))}` : ''}</small></span>
           <div class="amount-row small"><span class="cur">${a.cur === 'COP' ? '$' : a.cur === 'ARS' ? 'AR$' : 'US$'}</span>
             <input data-acc="${esc(a.id)}" inputmode="numeric" autocomplete="off" placeholder="0" value="${L.groupDigits(f.values[a.id])}" aria-label="Saldo de ${esc(a.name)}"></div>`;
         }).join('')}
@@ -1178,7 +1206,8 @@
       <tbody>${list.map((m) => `<tr data-act="mov" data-id="${esc(m.id)}">
         <td>${esc(dateTxt(m.date))}</td>
         <td>${esc(movTitle(m))}</td>
-        <td>${m.type === 'save' ? `Ahorro<br><small>${esc(m.cat)}</small>` : `${esc(m.cat)}${m.sub ? `<br><small>${esc(m.sub)}</small>` : ''}`}</td>
+        <td>${m.type === 'save' ? `Ahorro<br><small>${esc(m.cat)}</small>` : m.type === 'xfer' ? `Transferencia<br><small>${esc(xferLabel(m))}</small>`
+          : `${esc(m.cat)}${m.sub ? `<br><small>${esc(m.sub)}</small>` : ''}`}</td>
         <td>${esc(m.method || '')}</td>
         <td>${esc(L.personOf(m))}${m.paidBy && m.by && m.by !== m.paidBy ? `<br><small>cargó ${esc(m.by)}</small>` : ''}</td>
         <td class="n ${amtCls(m)}">${amtSign(m)}${esc(orig(m))}</td>
@@ -1196,7 +1225,7 @@
         <input class="input search" id="mov-q" type="search" placeholder="Buscar comentario, categoría…" value="${esc(f.q)}" aria-label="Buscar">
         <select id="mov-period" aria-label="Período">${[['month', 'Mes'], ['3m', 'Últimos 3 meses'], ['year', 'Año ' + key.slice(0, 4)], ['all', 'Todo']].map(([v, l]) => opt(v, l, f.period)).join('')}</select>
         ${f.period === 'month' ? `<span class="month-nav"><button data-act="mov-month" data-v="-1" aria-label="Mes anterior">‹</button><b>${esc(L.monthLabel(key))}</b><button data-act="mov-month" data-v="1" aria-label="Mes siguiente">›</button></span>` : ''}
-        <select id="mov-type" aria-label="Tipo">${[['all', 'Todos los tipos'], ['exp', 'Gastos'], ['inc', 'Ingresos'], ['save', 'Ahorro']].map(([v, l]) => opt(v, l, f.type)).join('')}</select>
+        <select id="mov-type" aria-label="Tipo">${[['all', 'Todos los tipos'], ['exp', 'Gastos'], ['inc', 'Ingresos'], ['save', 'Ahorro'], ['xfer', 'Transferencias']].map(([v, l]) => opt(v, l, f.type)).join('')}</select>
         <select id="mov-cat" aria-label="Categoría">${opt('', 'Todas las categorías', f.cat)}${cats.map((c) => opt(c, c, f.cat)).join('')}</select>
         <select id="mov-method" aria-label="Medio de pago">${opt('', 'Todos los medios', f.method)}${state.methods.map((m) => opt(m, m, f.method)).join('')}</select>
         <select id="mov-person" aria-label="Persona">${opt('', 'Todas las personas', f.person)}${L.peopleOf(state).map((p) => opt(p, p, f.person)).join('')}${opt('-', 'Sin asignar', f.person)}</select>
@@ -1382,13 +1411,15 @@
       const m = state.movements.find((x) => x.id === id);
       if (!m) return '<div class="empty">El movimiento ya no existe.</div>';
       return `<h3>${esc(movTitle(m))}</h3>
-        <p class="lead">${m.type === 'inc' ? 'Ingreso' : m.type === 'save' ? (m.amount < 0 ? 'Retiro de ahorro' : 'Aporte a una meta') : 'Gasto'}</p>
+        <p class="lead">${m.type === 'inc' ? 'Ingreso' : m.type === 'save' ? (m.amount < 0 ? 'Retiro de ahorro' : 'Aporte a una meta')
+          : m.type === 'xfer' ? 'Transferencia entre cuentas · no es gasto ni ingreso' : 'Gasto'}</p>
         <div class="card">
-          <div class="kv"><span>${m.type === 'save' ? 'Meta' : 'Categoría'}</span><b>${esc([m.cat, m.sub].filter(Boolean).join(' · '))}</b></div>
+          ${m.type === 'xfer' ? `<div class="kv"><span>Desde</span><b>${esc(accName(m.from))}</b></div><div class="kv"><span>Hacia</span><b>${esc(accName(m.to))}</b></div>`
+            : `<div class="kv"><span>${m.type === 'save' ? 'Meta' : 'Categoría'}</span><b>${esc([m.cat, m.sub].filter(Boolean).join(' · '))}</b></div>`}
           <div class="kv"><span>Fecha</span><b>${esc(cap(L.longDate(m.date)))}</b></div>
           <div class="kv"><span>Monto</span><b class="num">${esc(orig(m))}${m.cur !== dc() ? `<br><small style="color:var(--ink-2);font-weight:500">≈ ${esc(money(cop(m)))}</small>` : ''}</b></div>
           ${m.method ? `<div class="kv"><span>Medio de pago</span><b>${esc(m.method)}</b></div>` : ''}
-          ${m.paidBy ? `<div class="kv"><span>${m.type === 'inc' ? 'Lo recibió' : m.type === 'save' ? 'Aportó' : 'Pagó'}</span><b>${esc(m.paidBy)}</b></div>` : ''}
+          ${m.paidBy ? `<div class="kv"><span>${m.type === 'inc' ? 'Lo recibió' : m.type === 'save' ? 'Aportó' : m.type === 'xfer' ? 'La hizo' : 'Pagó'}</span><b>${esc(m.paidBy)}</b></div>` : ''}
           ${m.by ? `<div class="kv"><span>Cargado por</span><b>${esc(m.by)}</b></div>` : ''}
         </div>
         <button class="primary" data-act="mov-edit" data-id="${esc(m.id)}">Editar</button>
@@ -1400,6 +1431,7 @@
     const m = state.movements.find((x) => x.id === id);
     if (!m) return;
     openAdd(m.type, { editId: m.id, digits: String(Math.round(Math.abs(m.amount))), withdraw: m.amount < 0, goalId: m.goalId || '', cur: m.cur, cat: m.cat, sub: m.sub || '',
+      from: m.from || '', to: m.to || '',
       note: m.note || '', method: m.method || state.methods[0], paidBy: m.paidBy || '', date: m.date });
   }
 
@@ -1413,7 +1445,7 @@
       cat: m === 'inc' ? state.incomeCats[0] : state.categories[0].name,
       sub: '', note: '', method: state.methods[0], paidBy: '', date: today, due: today,
       recurring: false, alerts: [3, 0], scanNote: null, withdraw: false,
-      goalId: ((state.goals || [])[0] || {}).id || '', ...extra,
+      goalId: ((state.goals || [])[0] || {}).id || '', from: '', to: '', ...extra,
     };
   }
 
@@ -1429,7 +1461,7 @@
       const pct = (v) => (p.target ? Math.max(0, (v / p.target) * 100) : 0);
       return { tone: after >= p.target ? 'green' : '', text: `${g.name}: ${pctTxt(pct(before))} → ${pctTxt(pct(after))} de la meta` };
     }
-    if (form.mode === 'inc' || !form.digits) return null;
+    if (form.mode === 'inc' || form.mode === 'xfer' || !form.digits) return null;
     const key = L.monthKey(form.mode === 'bill' ? form.due : form.date);
     const s = L.categoryStats(state, key, today).find((x) => x.name === form.cat);
     if (!s || !s.limit) return null;
@@ -1469,13 +1501,28 @@
     sheet.querySelector('#f-impact').innerHTML = imp ? `<div class="notice ${imp.tone}">${esc(imp.text)}</div>` : '';
   }
 
+  // Transferencia: de qué cuenta sale y a cuál entra. Pagar el resumen de la tarjeta es «cuenta → tarjeta».
+  function xferBlock() {
+    const f = form;
+    const accs = (state.accounts || []).filter((a) => ['cash', 'card', 'invest'].includes(L.kindClass(a.kind)));
+    const opts = [...accs.map((a) => [a.id, a.name]), ['', 'Otra']];
+    const card = accs.find((a) => a.id === f.to && L.kindClass(a.kind) === 'card');
+    return `${accs.length ? '' : '<div class="notice" style="margin-top:12px">Para elegir las cuentas, cargalas en Balance → «+ Cuenta o bien» (las tarjetas de crédito con el tipo «Tarjeta de crédito»).</div>'}
+      <span class="field-label">Desde</span>
+      <div class="pills scroll">${pills(opts, (v) => v === f.from, 'form-from')}</div>
+      <span class="field-label">Hacia</span>
+      <div class="pills scroll">${pills(opts, (v) => v === f.to, 'form-to')}</div>
+      <div class="notice" style="margin-top:12px">${card ? `Pago del resumen de ${esc(card.name)}: baja la deuda de la tarjeta. Las compras ya se contaron como gasto al cargarlas.`
+        : 'No cuenta como gasto ni como ingreso: la plata sigue siendo de ustedes.'}</div>`;
+  }
+
   function renderAdd() {
     const f = form;
     const imp = impact();
     const people = L.peopleOf(state);
     if (sync.user && !people.includes(sync.user)) people.push(sync.user);
-    const modes = f.editId ? (f.mode === 'save' ? [['save', 'Ahorro']] : [['exp', 'Gasto'], ['inc', 'Ingreso']])
-      : [['exp', 'Gasto'], ['inc', 'Ingreso'], ['bill', 'Factura'], ['save', 'Ahorro']];
+    const modes = f.editId ? (f.mode === 'save' ? [['save', 'Ahorro']] : f.mode === 'xfer' ? [['xfer', 'Transferencia']] : [['exp', 'Gasto'], ['inc', 'Ingreso']])
+      : [['exp', 'Gasto'], ['inc', 'Ingreso'], ['bill', 'Factura'], ['save', 'Ahorro'], ['xfer', 'Transferir']];
     const goals = state.goals || [];
     if (f.mode === 'save' && !goals.length) {
       return `<h3>Agregar</h3><div class="seg wide">${modes.map(([v, l]) => `<button class="${f.mode === v ? 'on' : ''}" data-act="form-mode" data-v="${v}">${l}</button>`).join('')}</div>
@@ -1491,7 +1538,7 @@
       <div class="pills" style="margin-top:10px">${pills(L.CURRENCIES.map((c) => [c, c]), (v) => v === f.cur, 'form-cur')}</div>
       ${f.mode === 'save' ? `<div class="seg" style="margin-top:12px">${[[false, 'Aporte'], [true, 'Retiro']].map(([v, l]) => `<button class="${f.withdraw === v ? 'on' : ''}" data-act="form-withdraw" data-v="${v ? 1 : ''}">${l}</button>`).join('')}</div>
         <span class="field-label">Meta</span>
-        <div class="pills scroll">${pills(goals.map((g) => [g.id, g.name]), (v) => v === f.goalId, 'form-goal')}</div>` : `<div id="f-cat">${catBlock()}</div>`}
+        <div class="pills scroll">${pills(goals.map((g) => [g.id, g.name]), (v) => v === f.goalId, 'form-goal')}</div>` : f.mode === 'xfer' ? xferBlock() : `<div id="f-cat">${catBlock()}</div>`}
       <span class="field-label">${f.mode === 'bill' ? 'Nombre de la factura' : 'Comentario'}</span>
       <input class="input" id="f-note" maxlength="60" value="${esc(f.note)}" placeholder="${f.mode === 'bill' ? 'Ej: Internet hogar' : 'Opcional'}">
       ${f.mode === 'bill' ? `
@@ -1505,10 +1552,10 @@
         <input class="input" id="f-date" type="date" value="${esc(f.date)}">`}
       ${f.mode === 'exp' ? `<span class="field-label">Medio de pago</span>
         <div class="pills">${pills(state.methods.map((m) => [m, m]), (v) => v === f.method, 'form-method')}</div>` : ''}
-      ${f.mode !== 'bill' ? `<span class="field-label">${f.mode === 'inc' ? '¿Quién lo recibió?' : f.mode === 'save' ? '¿Quién aportó?' : '¿Quién pagó?'} <small class="hint">· opcional</small></span>
+      ${f.mode !== 'bill' ? `<span class="field-label">${f.mode === 'inc' ? '¿Quién lo recibió?' : f.mode === 'save' ? '¿Quién aportó?' : f.mode === 'xfer' ? '¿Quién la hizo?' : '¿Quién pagó?'} <small class="hint">· opcional</small></span>
         <div class="pills">${pills(people.map((p) => [p, p]), (v) => v === f.paidBy, 'form-paid')}</div>` : ''}
       <div id="f-impact">${imp ? `<div class="notice ${imp.tone}">${esc(imp.text)}</div>` : ''}</div>
-      <button class="primary" id="f-save" data-act="form-save" ${f.digits ? '' : 'disabled'}>${f.editId ? 'Guardar cambios' : { exp: 'Guardar gasto', inc: 'Guardar ingreso', bill: 'Guardar factura', save: f.withdraw ? 'Guardar retiro' : 'Guardar aporte' }[f.mode]}</button>`;
+      <button class="primary" id="f-save" data-act="form-save" ${f.digits ? '' : 'disabled'}>${f.editId ? 'Guardar cambios' : { exp: 'Guardar gasto', inc: 'Guardar ingreso', bill: 'Guardar factura', save: f.withdraw ? 'Guardar retiro' : 'Guardar aporte', xfer: 'Guardar transferencia' }[f.mode]}</button>`;
   }
 
   function mountAdd(sheet) {
@@ -1553,9 +1600,12 @@
       if (!f.date) return toast('Elegí la fecha', 'red');
       const goal = f.mode === 'save' && (state.goals || []).find((g) => g.id === f.goalId);
       if (f.mode === 'save' && !goal) return toast('Elegí la meta', 'red');
+      if (f.mode === 'xfer' && f.from && f.from === f.to) return toast('Elegí dos cuentas distintas', 'red');
       const data = goal
         ? { date: f.date, type: 'save', goalId: goal.id, cat: goal.name, sub: '', note: f.note.trim(), amount: f.withdraw ? -amount : amount, cur: f.cur, method: '', paidBy: f.paidBy || '' }
-        : { date: f.date, type: f.mode, cat: f.cat, sub: f.mode === 'inc' ? '' : f.sub, note: f.note.trim(), amount, cur: f.cur,
+        : f.mode === 'xfer'
+          ? { date: f.date, type: 'xfer', from: f.from, to: f.to, cat: 'Transferencia', sub: xferLabel(f), note: f.note.trim(), amount, cur: f.cur, method: '', paidBy: f.paidBy || '' }
+          : { date: f.date, type: f.mode, cat: f.cat, sub: f.mode === 'inc' ? '' : f.sub, note: f.note.trim(), amount, cur: f.cur,
           method: f.mode === 'exp' ? f.method : '', paidBy: f.paidBy || '' };
       const existing = f.editId && state.movements.find((m) => m.id === f.editId);
       if (existing) {
@@ -1567,6 +1617,8 @@
         toast(`${f.withdraw ? 'Retiro' : 'Aporte'} guardado · ${goal.name} al ${pctTxt(p.pct)}`, 'green');
       } else if (f.mode === 'inc') {
         toast(`Ingreso guardado en ${f.cat}`, 'green');
+      } else if (f.mode === 'xfer') {
+        toast(`Transferencia guardada · ${xferLabel(f)}`, 'green');
       } else {
         const s = L.categoryStats(state, L.monthKey(f.date), today).find((x) => x.name === f.cat);
         if (s && s.limit && s.pct >= 100) toast(`Te pasaste en ${f.cat} (${pctTxt(s.pct)})`, 'red');
@@ -2007,6 +2059,8 @@
         <span class="field-label">Planilla de Google</span>
         ${syncCard()}
 
+        <button class="secondary" style="margin-top:0" data-act="novedades">Novedades de la app</button>
+
         <span class="field-label">Alertas · avisarme al llegar al</span>
         <div class="pills">${[70, 80, 90].map((n) => `<button class="pill ${n === s.threshold ? 'on' : ''}" data-act="threshold" data-v="${n}">${n}%</button>`).join('')}</div>
 
@@ -2080,6 +2134,23 @@
     ui.sheet.isSettings = true;
   }
 
+  const codigoViejo = () => isSynced() && sync.lastSync && (Number(sync.codigo) || 0) < CODIGO_REQUERIDO;
+  const codigoAviso = '<b>Código de la planilla desactualizado.</b> En la planilla: Extensiones → Apps Script, reemplazá el código por el nuevo Codigo.gs, ' +
+    'guardá, usá «Cuentas Casa → 1. Instalar» y después Implementar → Gestionar implementaciones → editar → Nueva versión.';
+
+  function novedadesVistas() {
+    try { return Number(localStorage.getItem(NOVEDADES_KEY)) || 0; } catch (e) { return APP_VERSION; }
+  }
+
+  function openNovedades() {
+    try { localStorage.setItem(NOVEDADES_KEY, String(APP_VERSION)); } catch (e) { /* sin almacenamiento */ }
+    openSheet(() => `<h3>Novedades</h3>
+      ${[['En esta versión', NOVEDADES[0].items], ['Antes', NOVEDADES.slice(1).flatMap((n) => n.items)]].map(([t, items]) => `<span class="field-label">${t}</span>
+        <div class="card"><ul class="novedades">${items.map((x) => `<li>${esc(x)}</li>`).join('')}</ul></div>`).join('')}
+      <button class="primary" data-act="close-sheet">Entendido</button>`);
+    if (ui.tab === 'inicio') renderScreen();
+  }
+
   function syncCard() {
     if (isSynced()) {
       const when = sync.lastSync ? new Date(sync.lastSync).toLocaleString('es-CO', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : '—';
@@ -2088,6 +2159,9 @@
       return `<div class="card">
           <div class="kv"><span>Estado</span><b class="tone-green">Conectada${sync.user ? ' · ' + esc(sync.user) : ''}</b></div>
           <div class="kv"><span>Última sincronización</span><b>${esc(when)}</b></div>
+          <div class="kv"><span>Último respaldo en Drive</span><b>${sync.respaldo ? esc(L.shortDate(sync.respaldo)) : '—'}</b></div>
+          ${codigoViejo() ? `<div class="notice amber">${codigoAviso}</div>` : ''}
+          ${sync.respaldo && L.daysBetween(sync.respaldo, today) > 9 ? '<div class="notice amber">El último respaldo tiene más de una semana. En la planilla usá «Cuentas Casa → 1. Instalar» para reactivarlo.</div>' : ''}
           ${status}
           <button class="secondary" data-act="sync-now">Sincronizar ahora</button>
           <button class="secondary" data-act="copy-link">Copiar enlace para conectar otro dispositivo</button>
@@ -2290,6 +2364,8 @@
     },
     'form-cur': (d) => { form.cur = d.v; renderSheet(); },
     'form-goal': (d) => { form.goalId = d.v; renderSheet(); },
+    'form-from': (d) => { form.from = d.v; renderSheet(); },
+    'form-to': (d) => { form.to = d.v; renderSheet(); },
     'bal-month': (d) => { ui.balMonth = L.addMonths(balKey(), Number(d.v)); renderScreen(); },
     'bal-view': (d) => { ui.balView = d.v; renderScreen(); },
     account: (d) => openAccountForm(d.id),
@@ -2338,6 +2414,7 @@
       }
     },
     'close-sheet': () => closeSheet(),
+    novedades: () => openNovedades(),
     'paste-link': async () => {
       let text = '';
       try { text = await navigator.clipboard.readText(); } catch (e) { return toast('No se pudo leer el portapapeles. Pegalo en el primer campo.', 'red'); }
@@ -2514,4 +2591,9 @@
   setInterval(poll, POLL_MS);
   document.addEventListener('visibilitychange', poll);
   window.addEventListener('online', poll);
+
+  // Guarda la app en el teléfono para que abra sin conexión (ver sw.js).
+  if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {
+    navigator.serviceWorker.register('sw.js').catch(() => { /* sin modo sin conexión */ });
+  }
 })();

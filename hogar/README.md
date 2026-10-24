@@ -15,16 +15,18 @@ Moneda base COP, con ARS y USD para cargar y visualizar.
 - **Deudas**: hipotecas y préstamos con su cuota mensual, estado, saldo y avance. Abajo, el **plan para salir de las deudas**: con un pago extra mensual y la estrategia avalancha (mayor tasa primero) o bola de nieve (menor saldo primero), cuándo termina cada préstamo y cuánto interés se ahorra. Usa la TNA de la pestaña Deudas y la cuota sin seguros; las cuotas de los préstamos que terminan se suman al extra.
 - **Vencimientos → Plan por cobro**: para cada tramo entre cobros (sueldos, quincenas) muestra lo que entra, las facturas que vencen, los gastos del día a día estimados (promedio de los últimos 90 días) y lo que queda libre, con el acumulado. Los cobros se configuran en la app (pestaña «Ingresos esperados»); si no hay, se estiman con los ingresos de los últimos 3 meses.
 - **Balance** (por mes, por defecto el último cerrado):
-  - *Estado de resultados* por lo devengado: ingresos y gastos del mes aunque no se hayan cobrado o pagado (las facturas del mes cuentan aunque estén impagas; las facturas emitidas por cobrar cuentan en el mes de emisión, no al cobrarlas). De las cuotas de préstamos solo es gasto el interés, el seguro y los diferidos; la amortización baja la deuda. Los aportes a metas no son gasto.
-  - *Situación patrimonial* al cierre: cuentas, inversiones y bienes (con el último saldo cargado), facturas por cobrar, saldos de préstamos según la tabla de cuotas y facturas impagas. Montos al tipo de cambio actual.
-  - *Flujo de efectivo* simple: compara cuánto cambiaron las cuentas líquidas (bancos, efectivo, billeteras) con lo registrado en el mes; la diferencia muestra lo que falta cargar.
+  - *Estado de resultados* por lo devengado: ingresos y gastos del mes aunque no se hayan cobrado o pagado (las facturas del mes cuentan aunque estén impagas; las facturas emitidas por cobrar cuentan en el mes de emisión, no al cobrarlas). De las cuotas de préstamos solo es gasto el interés, el seguro y los diferidos; la amortización baja la deuda. Los aportes a metas y las transferencias no son gasto.
+  - *Situación patrimonial* al cierre: cuentas, inversiones y bienes (con el último saldo cargado), facturas por cobrar, saldos de préstamos según la tabla de cuotas, tarjetas de crédito (su saldo es lo que se debe) y facturas impagas. Montos al tipo de cambio actual.
+  - *Flujo de efectivo* simple: compara cuánto cambiaron las cuentas líquidas (bancos, efectivo, billeteras) con lo registrado en el mes; la diferencia muestra lo que falta cargar. Las tarjetas de crédito restan, así una compra con tarjeta y el pago del resumen cierran sin diferencias.
   - *Evolución del patrimonio*: activos, pasivos y patrimonio neto de los últimos 12 meses.
   - Las cuentas y bienes se agregan desde Balance y su saldo se carga una vez por mes con **Actualizar saldos** (el cierre preliminar por mail recuerda cuáles faltan).
+- **+ → Transferir**: movimientos entre cuentas propias (de una cuenta a otra, a una inversión o el pago del resumen de la tarjeta). No son gasto ni ingreso. Con la tarjeta de crédito: cada compra se carga como **gasto** (medio de pago Tarjeta Crédito) y el pago del resumen como **transferencia** de la cuenta a la tarjeta, para no contarlo dos veces.
 - **+**: agregar gasto, ingreso o factura (con repetición mensual y recordatorios), mostrando el impacto en el presupuesto antes de guardar. Al escribir el comentario sugiere la categoría (reglas de la pestaña Reglas o lo usado antes) y permite indicar, opcionalmente, quién pagó.
 - **Escanear**: foto de un ticket o factura → lee comercio, total y fecha (en facturas, la de «pague hasta») y abre el formulario ya completo para revisar, con el texto leído a la vista. Con la planilla conectada usa el lector de Google Drive; sin conexión, el del celular sobre la foto achicada, en grises y con más contraste.
 - **Computadora** (pantallas de 1024 px o más): menú lateral y pestaña **Resumen** con indicadores del mes (ahorro, ingresos, gastos, tasa de ahorro y presupuesto usado, comparados con el mes anterior), gráficos de ingresos y gastos de los últimos 12 meses, gasto acumulado contra presupuesto con proyección de cierre, gasto por categoría y por persona, más vencimientos y alertas. Los gráficos muestran los valores al pasar el mouse.
 - **Movimientos**: lista completa con búsqueda, filtros (período, tipo, categoría, medio de pago, persona), orden por fecha o importe, totales, edición y exportación a CSV de lo filtrado.
-- **⋯ Ajustes**: umbral de alertas, tasas de cambio, categorías, calendario, importar/exportar y datos.
+- **⋯ Ajustes**: umbral de alertas, tasas de cambio, categorías, calendario, importar/exportar, datos, último respaldo y **Novedades** (también aparecen en Inicio una vez después de cada actualización).
+- **Sin conexión**: la app queda guardada en el teléfono (`sw.js`) y abre sin internet; lo que se carga se envía al volver. Con internet siempre baja la última versión publicada.
 
 ## Cómo usarla
 
@@ -53,6 +55,8 @@ Conectada a la planilla «Cuentas Casa - base de datos», la app lee y escribe a
   a metas y el avance de cada una.
 - Cuentas y bienes en la pestaña **Cuentas y bienes**, y su saldo de cierre de cada mes en **Saldos** (se crean solas).
   La app lee de **Cuotas** solo los últimos 25 meses y los próximos 13.
+- **Respaldo semanal**: los domingos se copia la planilla en la carpeta **Backup** de Drive (quedan las últimas 12).
+- Si el `Codigo.gs` de la planilla es más viejo que lo que la app necesita, la app avisa «Código de la planilla desactualizado».
 - Las metas se guardan en la pestaña **Metas** (se crea sola con la primera meta). Borrar una meta la marca como
   inactiva; sus aportes quedan en Movimientos.
 
@@ -89,7 +93,8 @@ Excel y OCR descargan su librería la primera vez que se usan, así que necesita
 | `lib.js` | Reglas de negocio puras: conversión, vencimientos, presupuesto, proyección, alertas, ICS, CSV, importación, lectura de tickets |
 | `app.js` | Pantallas, hojas inferiores, interacciones y sincronización |
 | `charts.js` | Gráficos del dashboard en SVG (sin librerías) |
-| `apps-script/Codigo.gs` | Programa de la planilla: API para la app, facturas de cada mes y Google Calendar |
+| `sw.js` | Guarda la app para abrir sin conexión (primero la red, si no hay, la copia guardada) |
+| `apps-script/Codigo.gs` | Programa de la planilla: API para la app, facturas de cada mes, Google Calendar, mails y respaldo semanal |
 | `tests/` | Tests de las reglas de negocio y del programa de la planilla (sobre una planilla simulada, `fake-gas.js`) |
 
 ## Tests

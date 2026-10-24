@@ -44,9 +44,13 @@ Igual nadie puede leer ni escribir sin el código de acceso secreto que se crea 
    - se agrega la columna **Por cobrar ID** en Movimientos (vincula cada cobro con su factura emitida);
    - se agrega la columna **Desde** en Recurrentes (primer mes de una factura mensual nueva) y un activador que avisa
      a la app cuando se borran o insertan filas a mano en la planilla;
-   - se programan los mails de cierre (todos los días a las 8 revisa si corresponde mandar alguno).
+   - se programan los mails de cierre (todos los días a las 8 revisa si corresponde mandar alguno);
+   - se agregan las columnas **Origen ID** y **Destino ID** en Movimientos (cuentas de cada transferencia);
+   - se programa el **respaldo semanal** y se hace el primero (ver la sección 9).
 
 La versión con mails pide un permiso más: **enviar correo como vos**. Es para mandar el cierre del mes.
+La versión con respaldo pide **ver, editar, crear y borrar tus archivos de Google Drive**: es para copiar la
+planilla en la carpeta «Backup» y borrar las copias viejas (solo toca los archivos «Cuentas Casa - respaldo …»).
 
 ## 4. Conectar los celulares
 
@@ -101,12 +105,26 @@ subcategoría (Tipo `Gasto` o `Ingreso`; `Activa` en `No` la apaga). No distingu
 varias coinciden gana el texto más largo. Si ninguna regla coincide, la app sugiere la categoría que se usó
 antes para el mismo comentario. Elegir una categoría a mano siempre gana.
 
+## 9. Respaldo semanal
+
+Todos los domingos a la madrugada se guarda una copia completa de la planilla en la carpeta **Backup** de tu
+Google Drive, con el nombre `Cuentas Casa - respaldo AAAA-MM-DD`. Quedan las **últimas 12 copias** (unos 3 meses);
+las más viejas van a la papelera de Drive. La carpeta se crea sola la primera vez.
+
+- **Hacer un respaldo en el momento**: **Cuentas Casa → Hacer un respaldo ahora**.
+- **Ver el último**: en la app, **Ajustes → Planilla de Google → Último respaldo en Drive**. Si tiene más de una
+  semana, la app avisa (usá «1. Instalar» para reactivarlo).
+- **Recuperar datos**: abrí la copia de la fecha que necesitás y copiá las filas a la planilla original. No uses
+  el menú «Cuentas Casa» dentro de una copia: la app sigue conectada a la planilla original.
+
 ## Si algo falla
 
 - **La app dice «Código de acceso inválido»**: usá de nuevo «2. Conectar la app» y abrí el enlace nuevo.
 - **La app dice «La planilla no respondió»**: la dirección guardada no es la de la implementación publicada.
   Usá **Cuentas Casa → Cambiar la dirección de la app web** y pegá la de **Gestionar implementaciones**.
   También podés cargar la dirección y el código a mano en la app: **Ajustes → Planilla de Google**.
+- **La app dice «Código de la planilla desactualizado»**: hay un `Codigo.gs` nuevo. Seguí el punto siguiente
+  y usá **1. Instalar** antes de publicar la versión nueva.
 - **Cambiaste el programa** (por ejemplo, una versión nueva de `Codigo.gs`): pegalo, guardá y en
   **Implementar → Gestionar implementaciones → editar (lápiz) → Versión: Nueva versión → Implementar**.
   La URL no cambia.

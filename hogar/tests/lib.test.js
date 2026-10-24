@@ -747,3 +747,42 @@ test('enlace de conexión: completo, con %23, con espacios o con la primera letr
   assert.equal(L.parseConnectLink('hola'), null);
   assert.equal(L.parseConnectHash(`conectar=${encodeURIComponent(url.replace('https', 'Https'))}&token=x`).url.startsWith('Https'), true, 'se acepta y la app la normaliza');
 });
+
+test('transferencias y tarjeta de crédito: no son gasto ni ingreso y la tarjeta es un pasivo', () => {
+  const s = emptyState();
+  s.movements = [];
+  s.bills = [];
+  s.accounts = [
+    { id: 'A1', name: 'Banco', kind: 'Cuenta bancaria', cur: 'COP' },
+    { id: 'A2', name: 'Visa', kind: 'Tarjeta de crédito', cur: 'COP' },
+  ];
+  s.balances = [
+    { accountId: 'A1', month: '2026-08', amount: 5000000 }, { accountId: 'A2', month: '2026-08', amount: 800000 },
+    { accountId: 'A1', month: '2026-09', amount: 4200000 }, { accountId: 'A2', month: '2026-09', amount: 300000 },
+  ];
+  s.movements.push(
+    { id: 'm1', date: '2026-09-05', type: 'exp', cat: 'Alimentación', sub: '', amount: 300000, cur: 'COP', method: 'Tarjeta Crédito', note: '' },
+    { id: 'm2', date: '2026-09-10', type: 'xfer', from: 'A1', to: 'A2', cat: 'Transferencia', sub: '', amount: 800000, cur: 'COP', method: '', note: '' },
+  );
+  const sum = L.monthSummary(s, '2026-09');
+  assert.equal(sum.expense, 300000, 'pagar el resumen no es gasto: la compra ya lo fue');
+  assert.equal(sum.income, 0);
+  assert.deepEqual(L.spendByPerson(s, '2026-09').map((p) => p.expense), [300000]);
+  const b = L.balanceSheet(s, '2026-09', TODAY);
+  assert.equal(b.totalAssets, 4200000);
+  assert.equal(b.totalCards, 300000);
+  assert.equal(b.netWorth, 3900000, 'la deuda de la tarjeta resta');
+  const f = L.cashFlow(s, '2026-09');
+  assert.equal(f.opening, 4200000, 'banco menos tarjeta');
+  assert.equal(f.closing, 3900000);
+  assert.equal(f.unexplained, 0, 'la compra con tarjeta y el pago del resumen cierran sin diferencias');
+
+  const rows = L.stateToRows(s)['Movimientos'];
+  const t = rows.find((r) => r['ID'] === 'm2');
+  assert.equal(t['Tipo'], 'Transferencia');
+  assert.equal(t['Subcategoría'], 'Banco → Visa');
+  assert.equal(t['Origen ID'], 'A1');
+  assert.equal(t['Destino ID'], 'A2');
+  const back = L.sheetToState({ 'Movimientos': [t], 'Cuentas y bienes': [] }, null, TODAY).movements[0];
+  assert.deepEqual([back.type, back.from, back.to, back.amount], ['xfer', 'A1', 'A2', 800000]);
+});
