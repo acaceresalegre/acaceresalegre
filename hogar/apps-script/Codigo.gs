@@ -14,8 +14,9 @@ var EVENT_HOUR = 9;
 var TABLES = {
   'Movimientos': {
     key: ['ID'], dates: ['Fecha'],
-    text: ['ID', 'Tipo', 'Categoría', 'Subcategoría', 'Moneda', 'Medio de pago', 'Entidad', 'Comentarios', 'Cargado por', 'Pagó', 'Meta ID', 'Por cobrar ID'],
-    addable: ['Pagó', 'Meta ID', 'Por cobrar ID'], // columnas nuevas que se agregan solas si la planilla todavía no las tiene
+    text: ['ID', 'Tipo', 'Categoría', 'Subcategoría', 'Moneda', 'Medio de pago', 'Entidad', 'Comentarios', 'Cargado por', 'Pagó', 'Meta ID', 'Por cobrar ID',
+      'Origen ID', 'Destino ID'],
+    addable: ['Pagó', 'Meta ID', 'Por cobrar ID', 'Origen ID', 'Destino ID'], // columnas nuevas que se agregan solas si la planilla todavía no las tiene
   },
   'Facturas': {
     key: ['ID'], dates: ['Vence', 'Fecha de pago'],
@@ -71,6 +72,11 @@ var PULL_TABLES = ['Movimientos', 'Facturas', 'Recurrentes', 'Por cobrar', 'Cate
 var CUOTAS_MESES_ATRAS = 25;
 var CUOTAS_MESES_ADELANTE = 13;
 var REGLAS_HEADERS = ['Contiene', 'Categoría', 'Subcategoría', 'Tipo', 'Activa'];
+// Sube con cada cambio de este archivo que la app necesita; la app avisa si la planilla tiene uno más viejo.
+var CODIGO_VERSION = 14;
+var CARPETA_RESPALDO = 'Backup';
+var PREFIJO_RESPALDO = 'Cuentas Casa - respaldo ';
+var RESPALDOS_A_GUARDAR = 12;
 
 // ---------- Entrada web ----------
 
@@ -135,7 +141,8 @@ function pullPayload() {
       });
     }
   });
-  return { ok: true, version: getVersion(), tables: tables };
+  var respaldo = PropertiesService.getScriptProperties().getProperty('ultimoRespaldo') || '';
+  return { ok: true, version: getVersion(), codigo: CODIGO_VERSION, respaldo: respaldo, tables: tables };
 }
 
 // ---------- Versión (para que la app sepa si hay cambios) ----------
@@ -516,6 +523,7 @@ function onOpen() {
     .addSeparator()
     .addItem('Crear facturas y actualizar calendario ahora', 'tareaPeriodica')
     .addItem('Enviar cierre preliminar de prueba', 'probarMailCierre')
+    .addItem('Hacer un respaldo ahora', 'respaldarAhora')
     .addToUi();
 }
 
@@ -536,7 +544,7 @@ function instalar() {
     });
   });
   corregirTasaArs();
-  ensureHeaders('Movimientos', ['Pagó', 'Meta ID', 'Por cobrar ID']);
+  ensureHeaders('Movimientos', ['Pagó', 'Meta ID', 'Por cobrar ID', 'Origen ID', 'Destino ID']);
   ensureHeaders('Recurrentes', ['Desde']);
   crearReglas();
   crearPestana('Metas', TABLES['Metas'].headers);
@@ -547,14 +555,49 @@ function instalar() {
     'Separados por coma. Reciben el cierre preliminar (' + DIAS_ANTES_CIERRE + ' días antes de fin de mes) y el resumen (día 1).');
   ScriptApp.getProjectTriggers().forEach(function (tr) {
     var fn = tr.getHandlerFunction();
-    if (fn === 'tareaPeriodica' || fn === 'tareaDiaria' || fn === 'alCambiar') ScriptApp.deleteTrigger(tr);
+    if (['tareaPeriodica', 'tareaDiaria', 'alCambiar', 'respaldoSemanal'].indexOf(fn) >= 0) ScriptApp.deleteTrigger(tr);
   });
   ScriptApp.newTrigger('tareaPeriodica').timeBased().everyHours(1).create();
   ScriptApp.newTrigger('tareaDiaria').timeBased().everyDays(1).atHour(8).create();
   ScriptApp.newTrigger('alCambiar').forSpreadsheet(ss()).onChange().create();
+  ScriptApp.newTrigger('respaldoSemanal').timeBased().everyWeeks(1).onWeekDay(ScriptApp.WeekDay.SUNDAY).atHour(3).create();
   tareaPeriodica();
+  if (!PropertiesService.getScriptProperties().getProperty('ultimoRespaldo')) respaldoSemanal();
   SpreadsheetApp.getUi().alert('Listo', 'Se crearon las facturas del mes, el calendario «' + calendar().getName() +
-    '» y la actualización automática cada hora.\n\nAhora usá «2. Conectar la app».', SpreadsheetApp.getUi().ButtonSet.OK);
+    '», la actualización automática cada hora y un respaldo semanal (domingos) en la carpeta «' + CARPETA_RESPALDO +
+    '» de tu Drive.\n\nAhora usá «2. Conectar la app».', SpreadsheetApp.getUi().ButtonSet.OK);
+}
+
+// ---------- Respaldo semanal ----------
+// Copia la planilla entera en la carpeta «Backup» de Drive y deja solo las últimas RESPALDOS_A_GUARDAR copias
+// (las más viejas van a la papelera, de donde Google las borra a los 30 días).
+
+function respaldoSemanal() {
+  var carpeta = carpetaRespaldo_();
+  var nombre = PREFIJO_RESPALDO + todayIso();
+  if (!carpeta.getFilesByName(nombre).hasNext()) DriveApp.getFileById(ss().getId()).makeCopy(nombre, carpeta);
+  var copias = [];
+  var it = carpeta.getFiles();
+  while (it.hasNext()) {
+    var f = it.next();
+    if (f.getName().indexOf(PREFIJO_RESPALDO) === 0) copias.push(f);
+  }
+  // El nombre lleva la fecha AAAA-MM-DD, así que el orden alfabético es el cronológico.
+  copias.sort(function (a, b) { return a.getName() < b.getName() ? 1 : -1; });
+  copias.slice(RESPALDOS_A_GUARDAR).forEach(function (f) { f.setTrashed(true); });
+  PropertiesService.getScriptProperties().setProperty('ultimoRespaldo', todayIso());
+  return { nombre: nombre, carpeta: carpeta };
+}
+
+function carpetaRespaldo_() {
+  var it = DriveApp.getFoldersByName(CARPETA_RESPALDO);
+  return it.hasNext() ? it.next() : DriveApp.createFolder(CARPETA_RESPALDO);
+}
+
+function respaldarAhora() {
+  var r = respaldoSemanal();
+  SpreadsheetApp.getUi().alert('Respaldo listo', 'Se guardó «' + r.nombre + '» en la carpeta «' + CARPETA_RESPALDO +
+    '» de tu Drive:\n' + r.carpeta.getUrl() + '\n\nSe guardan las últimas ' + RESPALDOS_A_GUARDAR + ' copias.', SpreadsheetApp.getUi().ButtonSet.OK);
 }
 
 // La primera versión de la planilla guardó la tasa ARS redondeada a 2,14.
@@ -645,6 +688,8 @@ function tasas() {
 function aCop(item, campo, rates) { return (Number(item[campo]) || 0) * (rates[item['Moneda'] || 'COP'] || 1); }
 function esIngreso(m) { return m['Tipo'] === 'Ingreso' || m['Categoría'] === 'Ingresos'; }
 function esAhorro(m) { return m['Tipo'] === 'Ahorro'; }
+// Entre cuentas propias o pago del resumen de la tarjeta: no es ingreso ni gasto.
+function esTransferencia(m) { return m['Tipo'] === 'Transferencia'; }
 
 // Avance de cada meta activa: ahorro inicial más los aportes, en la moneda de la meta.
 function avanceMetas(rates) {
@@ -683,6 +728,7 @@ function datosMes(key) {
     var v = aCop(m, 'Importe', rates);
     if (esIngreso(m)) { d.ingresos += v; return; }
     if (esAhorro(m)) { d.aportes += v; return; } // aporte a una meta: no es gasto
+    if (esTransferencia(m)) return;
     d.gastos += v;
     d.movs.push(m);
     cat(m['Categoría'] || 'Sin categoría').gastado += v;
@@ -711,7 +757,7 @@ function paraRevisar(d) {
   var desde = addMonthsKey(d.key, -6);
   readTable('Movimientos').rows.forEach(function (m) {
     var k = String(m['Fecha'] || '').slice(0, 7);
-    if (k < desde || k >= d.key || esIngreso(m) || esAhorro(m)) return;
+    if (k < desde || k >= d.key || esIngreso(m) || esAhorro(m) || esTransferencia(m)) return;
     (historico[m['Categoría']] = historico[m['Categoría']] || []).push(aCop(m, 'Importe', d.rates));
   });
   var mediana = function (xs) {

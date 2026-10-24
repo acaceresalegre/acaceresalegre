@@ -193,11 +193,12 @@ test('la pestaña Reglas es opcional e instalar la crea', () => {
   gas.run('instalar');
   assert.deepEqual(gas.sheets['Reglas'].data[0], ['Contiene', 'Categoría', 'Subcategoría', 'Tipo', 'Activa']);
   assert.ok(gas.sheets['Movimientos'].data[0].includes('Pagó'));
+  assert.ok(gas.sheets['Movimientos'].data[0].includes('Origen ID') && gas.sheets['Movimientos'].data[0].includes('Destino ID'));
   const correos = rowsOf(gas, 'Ajustes').find((r) => r[0] === 'Correos del resumen');
   assert.equal(correos[1], 'alan@example.com');
-  assert.deepEqual(gas.triggers.sort(), ['alCambiar', 'tareaDiaria', 'tareaPeriodica']);
+  assert.deepEqual(gas.triggers.sort(), ['alCambiar', 'respaldoSemanal', 'tareaDiaria', 'tareaPeriodica']);
   gas.run('instalar');
-  assert.equal(gas.triggers.length, 3, 'reinstalar no duplica los activadores');
+  assert.equal(gas.triggers.length, 4, 'reinstalar no duplica los activadores');
   assert.equal(rowsOf(gas, 'Ajustes').filter((r) => r[0] === 'Correos del resumen').length, 1);
 });
 
@@ -209,6 +210,7 @@ function conMails(fecha) {
     ['M0003', D('2026-10-05'), 'Gasto', 'Alimentación', 'Supermercado', 'COP', 250000, 'Efectivo', '', '', 'Alan', '', 'Karo'],
     ['M0004', D('2026-10-03'), 'Gasto', 'Alimentación', 'Supermercado', 'COP', 250000, 'Efectivo', '', '', 'Alan', ''],
     ['M0005', D('2026-10-06'), 'Gasto', 'Ocio', '', 'COP', 40000, 'Efectivo', '', '', 'Karo', ''],
+    ['M0006', D('2026-10-10'), 'Transferencia', 'Transferencia', 'Banco → Visa', 'COP', 900000, '', '', 'Pago tarjeta', 'Alan', ''],
   );
   let now = D(fecha);
   const gas = createGas(p, { now: () => now });
@@ -239,7 +241,7 @@ test('resumen del mes anterior el día 1 con gastos por persona', () => {
   assert.equal(gas.mails.length, 1);
   const m = gas.mails[0];
   assert.equal(m.subject, 'Cuentas Casa · Resumen de octubre 2026');
-  // Gastos: 250.000 + 250.000 + 250.000 + 40.000 (la hipoteca no está pagada).
+  // Gastos: 250.000 + 250.000 + 250.000 + 40.000 (la hipoteca no está pagada; el pago de la tarjeta es transferencia).
   assert.match(m.htmlBody, /\$ 790\.000/);
   assert.match(m.htmlBody, /Karo<\/td><td[^>]*>\$ 290\.000/);
   assert.match(m.htmlBody, /Alan<\/td><td[^>]*>\$ 250\.000/);
@@ -359,4 +361,28 @@ test('auditoría: los mails salen aunque el activador se saltee el día', () => 
   gas.run('tareaDiaria');
   gas.run('tareaDiaria');
   assert.deepEqual(gas.mails.map((m) => m.subject.split(' · ')[1]), ['Cierre preliminar de octubre 2026', 'Resumen de octubre 2026']);
+});
+
+test('respaldo semanal: copia la planilla en la carpeta Backup y guarda solo las últimas 12', () => {
+  let now = new Date(2026, 9, 12, 3, 0);
+  const gas = createGas(planilla(), { now: () => now });
+  assert.equal(gas.get({ token: 'secreto', action: 'pull' }).respaldo, '');
+  gas.run('instalar');
+  assert.equal(gas.drive.folders.length, 1);
+  assert.equal(gas.drive.folders[0].name, 'Backup');
+  const vivos = () => gas.drive.files.filter((f) => !f.trashed).map((f) => f.name);
+  assert.deepEqual(vivos(), ['Cuentas Casa - respaldo 2026-10-12'], 'instalar hace el primer respaldo');
+  gas.run('respaldoSemanal');
+  assert.equal(vivos().length, 1, 'dos respaldos el mismo día no se duplican');
+  for (let i = 1; i <= 13; i++) { now = new Date(2026, 9, 12 + 7 * i, 3, 0); gas.run('respaldoSemanal'); }
+  assert.equal(gas.drive.folders.length, 1, 'reusa la carpeta');
+  const quedan = vivos().sort();
+  assert.equal(quedan.length, 12);
+  assert.equal(quedan[0], 'Cuentas Casa - respaldo 2026-10-26', 'los más viejos van a la papelera');
+  assert.equal(quedan[11], 'Cuentas Casa - respaldo 2027-01-11');
+  const r = gas.get({ token: 'secreto', action: 'pull' });
+  assert.equal(r.respaldo, '2027-01-11');
+  assert.equal(typeof r.codigo, 'number');
+  gas.run('respaldarAhora');
+  assert.match(gas.ui.alerts.at(-1), /Backup/);
 });
