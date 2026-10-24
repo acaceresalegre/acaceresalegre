@@ -9,8 +9,8 @@ Moneda base COP, con ARS y USD para cargar y visualizar.
 ## Pantallas
 
 - **Inicio**: saldo del mes, facturas por pagar, «te quedaría a fin de mes», alertas, próximos vencimientos, presupuesto y últimos movimientos.
-- **Vencimientos**: calendario mensual con puntos de estado (vencida / por vencer / pagada), lista agrupada y check de pago. Pestaña *Por cobrar* para las facturas emitidas por Karo: cada cobro, total o parcial, se registra como un ingreso vinculado a la factura (con la categoría que elijas) y la factura queda Pendiente, Parcial o Cobrada. Si el cliente paga menos (retención en la fuente o un descuento), se puede dar por cobrada igual y queda registrado lo que no se cobró.
-- **Presupuesto**: este mes (gastado, proyección de cierre, umbral de aviso 70/80/90 %, una tarjeta por categoría) y año (ahorro, gráfico mensual contra presupuesto, comparación por categoría).
+- **Vencimientos**: calendario mensual con puntos de estado (vencida / por vencer / pagada), lista agrupada y check de pago. Pestaña *Por cobrar* para las facturas emitidas por Karo: cada cobro, total o parcial, se registra como un ingreso vinculado a la factura (con la categoría que elijas) y la factura queda Pendiente, Parcial o Cobrada. Si el cliente paga menos, se elige qué pasó con la diferencia: **Retención** (la retención en la fuente: queda como saldo a favor para la declaración de renta, en Balance y arriba de Por cobrar, hasta octubre del año siguiente) o **No se cobra** (un descuento: cuenta como gasto «Facturas no cobradas» del mes).
+- **Presupuesto**: este mes (gastado, proyección de cierre, umbral de aviso 70/80/90 %, una tarjeta por categoría) y año (ahorro, gráfico mensual contra presupuesto, comparación por categoría). Tocando una categoría → **Editar** se cambia el presupuesto de cada subcategoría del mes, y si se elige, hasta diciembre (pestaña Presupuesto de la planilla). Si una categoría no tiene presupuesto en un mes, usa el del mismo mes del año anterior.
 - **Metas**: metas de ahorro con monto, fecha objetivo y ahorro inicial. Cada una muestra el avance, cuánto falta por mes para llegar a tiempo, el ritmo de los últimos 3 meses y cuándo se alcanzaría a ese ritmo. Los aportes (y retiros) se cargan con **+ → Ahorro** y quedan en Movimientos con tipo «Ahorro»: no cuentan como gasto ni entran al presupuesto, pero se descuentan de «te quedaría a fin de mes». En el celular Metas, Deudas y Balance están en la pestaña **Patrimonio**.
 - **Deudas**: hipotecas y préstamos con su cuota mensual, estado, saldo y avance. Abajo, el **plan para salir de las deudas**: con un pago extra mensual y la estrategia avalancha (mayor tasa primero) o bola de nieve (menor saldo primero), cuándo termina cada préstamo y cuánto interés se ahorra. Usa la TNA de la pestaña Deudas y la cuota sin seguros; las cuotas de los préstamos que terminan se suman al extra.
 - **Vencimientos → Plan por cobro**: para cada tramo entre cobros (sueldos, quincenas) muestra lo que entra, las facturas que vencen, los gastos del día a día estimados (promedio de los últimos 90 días) y lo que queda libre, con el acumulado. Los cobros se configuran en la app (pestaña «Ingresos esperados»); si no hay, se estiman con los ingresos de los últimos 3 meses.
@@ -20,6 +20,8 @@ Moneda base COP, con ARS y USD para cargar y visualizar.
   - *Flujo de efectivo* simple: compara cuánto cambiaron las cuentas líquidas (bancos, efectivo, billeteras) con lo registrado en el mes; la diferencia muestra lo que falta cargar. Las tarjetas de crédito restan, así una compra con tarjeta y el pago del resumen cierran sin diferencias.
   - *Evolución del patrimonio*: activos, pasivos y patrimonio neto de los últimos 12 meses.
   - Las cuentas y bienes se agregan desde Balance y su saldo se carga una vez por mes con **Actualizar saldos** (el cierre preliminar por mail recuerda cuáles faltan).
+- **+ → Gasto → Devolución**: un reintegro; resta del gasto de la categoría (queda con importe negativo en Movimientos).
+- **Facturas mensuales**: desde una factura → **Editar** (esta o también los meses siguientes) o desde **Ajustes → Facturas mensuales**: nombre, monto, día y categoría. Cambia la plantilla de Recurrentes y las facturas que vienen sin pagar.
 - **+ → Transferir**: movimientos entre cuentas propias (de una cuenta a otra, a una inversión o el pago del resumen de la tarjeta). No son gasto ni ingreso. Con la tarjeta de crédito: cada compra se carga como **gasto** (medio de pago Tarjeta Crédito) y el pago del resumen como **transferencia** de la cuenta a la tarjeta, para no contarlo dos veces.
 - **+**: agregar gasto, ingreso o factura (con repetición mensual y recordatorios), mostrando el impacto en el presupuesto antes de guardar. Al escribir el comentario sugiere la categoría (reglas de la pestaña Reglas o lo usado antes) y permite indicar, opcionalmente, quién pagó.
 - **Escanear**: foto de un ticket o factura → lee comercio, total y fecha (en facturas, la de «pague hasta») y abre el formulario ya completo para revisar, con el texto leído a la vista. Con la planilla conectada usa el lector de Google Drive; sin conexión, el del celular sobre la foto achicada, en grises y con más contraste.
@@ -47,7 +49,7 @@ Conectada a la planilla «Cuentas Casa - base de datos», la app lee y escribe a
 - La planilla es la fuente de verdad. Cada cambio se envía como alta, cambio o baja de una fila (identificada por su ID);
   si no hay conexión queda pendiente y se envía al volver.
 - Las facturas de cada mes (recurrentes y cuotas de préstamos) las crea el programa de la planilla, una vez por hora.
-- Límites de presupuesto, préstamos y cuotas se editan en la planilla; la app los muestra.
+- Préstamos y cuotas se editan en la planilla; la app los muestra. El presupuesto se puede editar en los dos lados.
 - Cada movimiento guarda quién lo cargó (**Cargado por**, según el enlace con el que se conectó cada uno) y,
   si se indica, quién pagó (**Pagó**). Los totales por persona usan «Pagó» y, si está vacío, «Cargado por».
 - Mails de cierre: un **cierre preliminar** 4 días antes de fin de mes para corregir lo que falte y un **resumen**
@@ -102,3 +104,15 @@ Excel y OCR descargan su librería la primera vez que se usan, así que necesita
 ```bash
 node --test tests/*.test.js
 ```
+
+Recorrido en un navegador (todas las pantallas en celular y computadora, con una planilla simulada). Corre en cada
+publicación y en cada PR; las capturas quedan como artefacto «capturas-del-recorrido» de la ejecución:
+
+```bash
+npm install --no-save playwright && npx playwright install chromium
+node tests/e2e/recorrido.js /tmp/capturas
+```
+
+Lo que no se puede automatizar (app instalada, cámara, modo avión) está en la
+[lista de prueba en el celular](docs/PRUEBAS-MANUALES.md). Para ver dónde se traba alguien nuevo, la
+[prueba de uso](docs/PRUEBA-DE-USO.md) tiene 5 tareas y qué anotar.

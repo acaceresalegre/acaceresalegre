@@ -786,3 +786,46 @@ test('transferencias y tarjeta de crédito: no son gasto ni ingreso y la tarjeta
   const back = L.sheetToState({ 'Movimientos': [t], 'Cuentas y bienes': [] }, null, TODAY).movements[0];
   assert.deepEqual([back.type, back.from, back.to, back.amount], ['xfer', 'A1', 'A2', 800000]);
 });
+
+test('retención en la fuente: saldo a favor en el balance; el descuento es gasto; devoluciones restan', () => {
+  const s = emptyState();
+  s.movements = [];
+  s.bills = [];
+  s.receivables = [
+    { id: 'R1', client: 'Clínica', issued: '2026-08-01', due: '2026-09-01', amount: 1000000, cur: 'COP', collected: true, collectedAt: '2026-09-10', withheld: 110000 },
+    { id: 'R2', client: 'Consultorio', issued: '2026-08-05', due: '2026-09-05', amount: 500000, cur: 'COP', collected: true, collectedAt: '2026-09-12' },
+  ];
+  s.movements.push(
+    { id: 'c1', date: '2026-09-10', type: 'inc', cat: 'Sueldo Karo', amount: 850000, cur: 'COP', receivableId: 'R1' },
+    { id: 'c2', date: '2026-09-12', type: 'inc', cat: 'Sueldo Karo', amount: 450000, cur: 'COP', receivableId: 'R2' },
+  );
+  const i1 = L.receivableInfo(s, s.receivables[0]);
+  assert.deepEqual([i1.writtenOff, i1.withheld, i1.lost], [150000, 110000, 40000], 'retención y descuento por separado');
+  const r = L.incomeStatement(s, '2026-09');
+  assert.equal(r.expense.find((x) => x.name === 'Facturas no cobradas').amount, 40000 + 50000, 'la retención no es gasto');
+  assert.equal(L.balanceSheet(s, '2026-09', TODAY).assets.retentions, 110000);
+  assert.deepEqual(L.balanceSheet(s, '2027-10', TODAY).retentions, [{ year: 2026, amount: 110000 }], 'sigue hasta la declaración');
+  assert.deepEqual(L.balanceSheet(s, '2027-11', TODAY).retentions, [], 'después de octubre del año siguiente ya se usó');
+  assert.equal(L.balanceSheet(s, '2026-08', TODAY).assets.retentions, 0, 'antes de cerrar la factura no hay retención');
+  const rows = L.stateToRows(s)['Por cobrar'];
+  assert.equal(rows[0]['Retención'], 110000);
+  assert.equal(rows[1]['Retención'], '');
+  assert.equal(L.sheetToState({ 'Por cobrar': rows }, null, TODAY).receivables[0].withheld, 110000);
+
+  s.movements.push(
+    { id: 'g1', date: '2026-10-02', type: 'exp', cat: s.categories[0].name, sub: '', amount: 200000, cur: 'COP' },
+    { id: 'g2', date: '2026-10-03', type: 'exp', cat: s.categories[0].name, sub: '', amount: -50000, cur: 'COP', note: 'Devolución' },
+  );
+  assert.equal(L.categoryStats(s, '2026-10', TODAY).find((c) => c.name === s.categories[0].name).spent, 150000);
+  assert.equal(L.monthSummary(s, '2026-10').expense, 150000);
+});
+
+test('diffRows: presupuesto nuevo solo como punto de partida y filas repetidas se reemplazan juntas', () => {
+  const row = (sub, v) => ({ 'Mes': '2026-10-01', 'Categoría': 'Ocio', 'Subcategoría': sub, 'Moneda': 'COP', 'Importe': v });
+  assert.deepEqual(L.diffRows({ 'Movimientos': [] }, { 'Movimientos': [], 'Presupuesto': [row('Salidas', 1)] }), [], 'la primera vez no se reenvía todo');
+  const prev = { 'Presupuesto': [row('Salidas', 100), row('Salidas', 50), row('Cine', 30)] };
+  assert.deepEqual(L.diffRows(prev, { 'Presupuesto': prev['Presupuesto'].map((r) => ({ ...r })) }), [], 'sin cambios no manda nada');
+  const ops = L.diffRows(prev, { 'Presupuesto': [row('Salidas', 200), row('Cine', 40)] });
+  assert.deepEqual(ops.map((o) => [o.op, o.row['Subcategoría'], o.row['Importe']]), [
+    ['delete', 'Salidas', 100], ['upsert', 'Salidas', 200], ['upsert', 'Cine', 40]]);
+});

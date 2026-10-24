@@ -46,6 +46,7 @@ Igual nadie puede leer ni escribir sin el código de acceso secreto que se crea 
      a la app cuando se borran o insertan filas a mano en la planilla;
    - se programan los mails de cierre (todos los días a las 8 revisa si corresponde mandar alguno);
    - se agregan las columnas **Origen ID** y **Destino ID** en Movimientos (cuentas de cada transferencia);
+   - se agrega la columna **Retención** en Por cobrar (retención en la fuente de cada factura emitida);
    - se programa el **respaldo semanal** y se hace el primero (ver la sección 9).
 
 La versión con mails pide un permiso más: **enviar correo como vos**. Es para mandar el cierre del mes.
